@@ -19,7 +19,7 @@ from app.core.exceptions import (
 from app.validation.base import FileValidator, RowValidator, FieldValidator
 
 
-# Required headers for members
+# Mandatory headers through joinedDate (file review)
 REQUIRED_HEADERS = [
     "userForeignId",
     "studioForeignId",
@@ -27,15 +27,25 @@ REQUIRED_HEADERS = [
     "email",
     "firstName",
     "lastName",
+    "phone",
     "gender",
     "birthDate",
     "leadStatus",
+    "street",
+    "city",
+    "state",
     "countryCode",
     "country",
     "postalCode",
+    "accessBarcode",
+    "emergencyContact",
+    "emailConsent",
+    "pushConsent",
+    "smsConsent",
+    "joinedDate",
 ]
 
-# Required fields per row
+# Required fields per row (leadStatus must not be blank)
 REQUIRED_FIELDS = [
     "userForeignId",
     "studioId",
@@ -51,15 +61,17 @@ ALLOWED_LEAD_STATUSES = {"MEMBER", "LEAD", "COLD", "TRIALS"}
 
 
 class RequiredHeaderValidator(FileValidator):
-    """Validate that all required headers are present."""
+    """Validate that all mandatory file-review headers are present."""
 
     def __init__(self):
         super().__init__(
             rule_id="required_headers",
-            rule_name="Required Headers",
+            rule_name="File Review",
             category="File Level",
             severity=ValidationSeverity.ERROR,
-            description="All required column headers must be present",
+            description=(
+                "Checking mandatory columns and blank lead status"
+            ),
             auto_fix_available=False,
         )
 
@@ -145,10 +157,10 @@ class RequiredFieldValidator(RowValidator):
     def __init__(self):
         super().__init__(
             rule_id="required_fields",
-            rule_name="Required Fields",
+            rule_name="Lead Status & Required Fields",
             category="Required Fields",
             severity=ValidationSeverity.ERROR,
-            description="Required fields must not be empty",
+            description="Required fields must not be empty; leadStatus must not be blank",
             auto_fix_available=False,
         )
 

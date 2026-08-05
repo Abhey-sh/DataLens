@@ -6,32 +6,32 @@ import {
   BadgeCheck,
   ClipboardCheck,
   Clock3,
-  CopyCheck,
   Database,
   DatabaseZap,
+  FileSearch,
   FileSpreadsheet,
   Gauge,
   Languages,
   LoaderCircle,
-  MailCheck,
-  Scale,
   ScanSearch,
   ShieldCheck,
   Sparkles,
-  Terminal,
   UploadCloud,
   XCircle,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "../../../components/ui/Button";
 import { Stepper } from "../../../components/ui/Stepper";
 import {
+  addMissingMandatoryColumns,
   getApiErrorMessage,
   getMembersValidationProgress,
   startMembersValidation,
 } from "../services/validationService";
+
+const FILE_REVIEW_CHECK_IDS = ["required_headers", "required_fields"];
 
 const pipelineSteps = [
   {
@@ -56,18 +56,11 @@ const pipelineSteps = [
     gradient: "from-fuchsia-500 to-violet-500",
   },
   {
-    id: "validate",
-    title: "Validate member fields",
-    description: "Checking email, schema, defaults, and allowed values",
-    icon: MailCheck,
+    id: "file-review",
+    title: "File review",
+    description: "Checking mandatory columns and blank lead status",
+    icon: FileSearch,
     gradient: "from-violet-600 to-indigo-500",
-  },
-  {
-    id: "rules",
-    title: "Apply business rules",
-    description: "Evaluating member-specific import requirements",
-    icon: Scale,
-    gradient: "from-orange-400 to-amber-500",
   },
   {
     id: "prepare",
@@ -118,7 +111,67 @@ export function MembersProcessingPage() {
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(null);
   const [attempt, setAttempt] = useState(0);
-  const terminalRef = useRef(null);
+  const [showFileReviewAlert, setShowFileReviewAlert] = useState(false);
+  const [addingMissingColumns, setAddingMissingColumns] = useState(false);
+  const [fileReviewNotice, setFileReviewNotice] = useState("");
+
+  const missingMandatoryColumns = useMemo(() => {
+    const headerIssue = result?.affectedRows?.find(
+      (issue) => issue.ruleId === "required_headers",
+    );
+    if (!headerIssue?.reason) return [];
+    const match = headerIssue.reason.match(/Missing required headers:\s*(.+)$/i);
+    if (!match) return [];
+    return match[1]
+      .split(",")
+      .map((column) => column.trim())
+      .filter(Boolean);
+  }, [result]);
+
+  const fileReviewIssues = useMemo(() => {
+    const messages = [];
+    const checks = progress?.checks ?? [];
+    const headerCheck = checks.find((check) => check.checkId === "required_headers");
+    const headerIssue = result?.affectedRows?.find(
+      (issue) => issue.ruleId === "required_headers",
+    );
+    const hasMissingHeaders = result
+      ? Boolean(headerIssue)
+      : (headerCheck?.issuesFound ?? 0) > 0;
+
+    if (hasMissingHeaders) {
+      messages.push(
+        headerIssue?.reason ||
+          "Mandatory columns are missing and need to be reviewed.",
+      );
+    }
+
+    const blankLeadRows =
+      result?.affectedRows?.filter(
+        (issue) =>
+          issue.ruleId === "required_fields" &&
+          issue.fieldName === "leadStatus",
+      ) ?? [];
+
+    if (blankLeadRows.length > 0) {
+      messages.push(
+        `${blankLeadRows.length.toLocaleString()} row${
+          blankLeadRows.length === 1 ? "" : "s"
+        } have blank leadStatus and need to be reviewed.`,
+      );
+    }
+
+    return messages;
+  }, [progress, result]);
+
+  const fileReviewBlocked = fileReviewIssues.length > 0;
+  const canAutoAddMissingColumns = missingMandatoryColumns.length > 0;
+
+  useEffect(() => {
+    if (fileReviewIssues.length) {
+      setShowFileReviewAlert(true);
+    }
+  }, [fileReviewIssues]);
 
   useEffect(() => {
     const file = location.state?.file;
@@ -216,36 +269,45 @@ export function MembersProcessingPage() {
       if (progress || result) return "completed";
       return "queued";
     }
-    if (step.id === "validate") {
+    if (step.id === "file-review") {
       if (error) return "failed";
-      if (result || progress?.status === "completed") return "completed";
-      const midpoint = Math.ceil((progress?.totalSteps ?? 0) / 2);
-      if (
-        progress?.totalSteps &&
-        progress?.stage === "validating" &&
-        progress.completedSteps >= midpoint
-      ) {
-        return "completed";
+
+      const checks = progress?.checks ?? [];
+      const fileReviewChecks = FILE_REVIEW_CHECK_IDS.map((id) =>
+        checks.find((check) => check.checkId === id),
+      );
+      const fileReviewFinished =
+        result ||
+        progress?.status === "completed" ||
+        progress?.stage === "preparing" ||
+        (fileReviewChecks.length > 0 &&
+          fileReviewChecks.every(
+            (check) =>
+              check &&
+              (check.status === "completed" || check.status === "failed"),
+          ));
+
+      if (fileReviewFinished) {
+        return fileReviewIssues.length ? "failed" : "completed";
       }
       return progress?.stage === "validating" ? "running" : "queued";
-    }
-    if (step.id === "rules") {
-      if (error) return "failed";
-      if (result || progress?.status === "completed") return "completed";
-      const midpoint = Math.ceil((progress?.totalSteps ?? 0) / 2);
-      if (
-        progress?.totalSteps &&
-        progress?.stage === "validating" &&
-        progress.completedSteps >= midpoint
-      ) {
-        return "running";
-      }
-      return "queued";
     }
     if (step.id === "prepare") {
       if (error) return "not-run";
       if (result) return "completed";
-      return progress?.stage === "preparing" ? "running" : "queued";
+      if (progress?.stage === "preparing") return "running";
+
+      const checks = progress?.checks ?? [];
+      const fileReviewFinished = FILE_REVIEW_CHECK_IDS.every((id) => {
+        const check = checks.find((item) => item.checkId === id);
+        return (
+          check &&
+          (check.status === "completed" || check.status === "failed")
+        );
+      });
+      return progress?.stage === "validating" && fileReviewFinished
+        ? "running"
+        : "queued";
     }
     if (step.id === "complete") {
       if (result) return "completed";
@@ -268,57 +330,70 @@ export function MembersProcessingPage() {
       ? Math.round(progress.recordsScanned / progress.elapsedTime)
       : null;
 
-  const engineLogs = useMemo(() => {
-    if (error) {
-      return [{ level: "ERROR", message: error }];
-    }
-    const logs = (progress?.checks ?? [])
-      .filter((check) => check.status !== "pending")
-      .map((check) => ({
-        level:
-          check.status === "failed"
-            ? "ERROR"
-            : check.status === "running"
-              ? "INFO"
-              : check.issuesFound
-                ? "WARNING"
-                : "SUCCESS",
-        message:
-          check.status === "running"
-            ? `${check.name} is running`
-            : `${check.name}: ${check.issuesFound} issue${check.issuesFound === 1 ? "" : "s"}`,
-      }));
-    if (!logs.length) {
-      logs.push({
-        level: "INFO",
-        message:
-          completion < 20
-            ? "Uploading members dataset"
-            : "Initializing validation engine",
-      });
-    }
-    if (result) {
-      logs.push({
-        level: "SUCCESS",
-        message: `${result.summary.totalRecords.toLocaleString()} records validated`,
-      });
-    }
-    return logs.slice(-8);
-  }, [completion, error, progress, result]);
-
-  useEffect(() => {
-    terminalRef.current?.scrollTo({
-      top: terminalRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [engineLogs]);
-
   const retryValidation = () => {
     setCompletion(0);
     setResult(null);
     setError("");
     setProgress(null);
+    setShowFileReviewAlert(false);
+    setFileReviewNotice("");
+    setAddingMissingColumns(false);
     setAttempt((current) => current + 1);
+  };
+
+  const handleAddMissingColumns = async () => {
+    setAddingMissingColumns(true);
+    setFileReviewNotice("");
+    try {
+      const response = await addMissingMandatoryColumns();
+      setResult(response.result);
+      setProgress((current) =>
+        current
+          ? {
+              ...current,
+              result: response.result,
+              potentialIssues: response.result.affectedRows.length,
+              validationScore: response.result.summary.validationScore,
+              checks: (current.checks ?? []).map((check) => {
+                const issuesFound = response.result.affectedRows.filter(
+                  (issue) => issue.ruleId === check.checkId,
+                ).length;
+                return {
+                  ...check,
+                  status: "completed",
+                  issuesFound,
+                };
+              }),
+            }
+          : current,
+      );
+      setFileReviewNotice(
+        `Added missing columns: ${response.addedColumns.join(", ")}.`,
+      );
+      const stillBlocked = response.result.affectedRows.some(
+        (issue) =>
+          issue.ruleId === "required_headers" ||
+          (issue.ruleId === "required_fields" &&
+            issue.fieldName === "leadStatus"),
+      );
+      setShowFileReviewAlert(stillBlocked);
+    } catch (requestError) {
+      setFileReviewNotice(
+        getApiErrorMessage(
+          requestError,
+          "Could not add the missing columns automatically.",
+        ),
+      );
+    } finally {
+      setAddingMissingColumns(false);
+    }
+  };
+
+  const handleFixManually = () => {
+    setShowFileReviewAlert(false);
+    setFileReviewNotice(
+      "Continue to Review stays disabled until mandatory columns and blank leadStatus are fixed. Upload a corrected file when ready.",
+    );
   };
 
   const rowsPercent = progress?.totalRecords
@@ -335,10 +410,6 @@ export function MembersProcessingPage() {
   const currentRule = result
     ? "Review ready"
     : currentCheck?.name ?? progressLabel;
-  const passedChecks =
-    progress?.checks?.filter(
-      (check) => check.status === "completed" && check.issuesFound === 0,
-    ).length ?? 0;
 
   const metrics = [
     {
@@ -379,7 +450,7 @@ export function MembersProcessingPage() {
       value: progress?.totalSteps
         ? `${progress.completedSteps}/${progress.totalSteps}`
         : "—",
-      description: "Business and field checks",
+      description: "Validation checks run",
       icon: ClipboardCheck,
       gradient: "from-emerald-500 to-green-400",
       tint: "from-emerald-50 to-green-50/40 dark:from-emerald-950/35 dark:to-green-950/10",
@@ -411,6 +482,91 @@ export function MembersProcessingPage() {
 
   return (
     <div className="relative isolate -mx-4 -my-6 min-h-screen overflow-hidden px-4 py-6 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      <AnimatePresence>
+        {showFileReviewAlert && fileReviewIssues.length ? (
+          <motion.div
+            key="file-review-alert"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 16, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              className="w-full max-w-lg overflow-hidden rounded-2xl border border-rose-300 bg-rose-600 text-white shadow-2xl shadow-rose-950/40"
+            >
+              <div className="flex items-start gap-3 p-5">
+                <div className="rounded-xl bg-white/15 p-2">
+                  <XCircle size={22} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-lg font-semibold">
+                    File review needs attention
+                  </h3>
+                  <p className="mt-1 text-sm text-rose-50/90">
+                    These rules were not satisfied and need to be reviewed.
+                  </p>
+                  <ul className="mt-4 space-y-2 text-sm text-rose-50">
+                    {fileReviewIssues.map((message) => (
+                      <li
+                        key={message}
+                        className="rounded-xl bg-rose-700/70 px-3 py-2"
+                      >
+                        {message}
+                      </li>
+                    ))}
+                  </ul>
+                  {canAutoAddMissingColumns ? (
+                    <div className="mt-4 rounded-xl bg-rose-700/50 px-3 py-3 text-sm text-rose-50">
+                      <p className="font-medium">
+                        Add missing fields automatically?
+                      </p>
+                      <p className="mt-1 text-rose-100/90">
+                        Yes will insert empty columns for:{" "}
+                        {missingMandatoryColumns.join(", ")}. Blank leadStatus
+                        values still need a manual fix.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="mt-4 text-sm text-rose-100/90">
+                      Blank leadStatus cannot be auto-filled. Choose No to fix
+                      the file manually, then upload again.
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-wrap justify-end gap-2 border-t border-rose-500/60 bg-rose-700/40 px-5 py-3">
+                <Button
+                  variant="secondary"
+                  className="border-0 bg-white/15 text-white hover:bg-white/25"
+                  disabled={addingMissingColumns}
+                  onClick={handleFixManually}
+                >
+                  No, I&apos;ll fix manually
+                </Button>
+                {canAutoAddMissingColumns ? (
+                  <Button
+                    className="gap-2 border-0 bg-white text-rose-700 hover:bg-rose-50"
+                    disabled={addingMissingColumns}
+                    onClick={handleAddMissingColumns}
+                  >
+                    {addingMissingColumns ? (
+                      <>
+                        <LoaderCircle size={15} className="animate-spin" />
+                        Adding columns…
+                      </>
+                    ) : (
+                      "Yes, add missing fields"
+                    )}
+                  </Button>
+                ) : null}
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
       <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(circle_at_8%_8%,rgba(139,92,246,0.14),transparent_28%),radial-gradient(circle_at_92%_4%,rgba(59,130,246,0.13),transparent_27%),linear-gradient(to_bottom,rgba(248,250,252,0.72),rgba(255,255,255,0.98))] dark:bg-[radial-gradient(circle_at_8%_8%,rgba(124,58,237,0.18),transparent_28%),radial-gradient(circle_at_92%_4%,rgba(37,99,235,0.16),transparent_27%),linear-gradient(to_bottom,#090d18,#0f172a)]" />
       <div className="mx-auto max-w-[1500px] space-y-5">
         <motion.header
@@ -535,7 +691,7 @@ export function MembersProcessingPage() {
                     const status = getStepStatus(step);
                     const Icon = step.icon;
                     const duration =
-                      step.id === "validate" && completedCheckDuration > 0
+                      step.id === "file-review" && completedCheckDuration > 0
                         ? formatDuration(completedCheckDuration)
                         : step.id === "complete" && result
                           ? formatDuration(result.summary.executionTime)
@@ -652,21 +808,67 @@ export function MembersProcessingPage() {
                           <Sparkles size={22} />
                         </div>
                         <div>
-                          <h3 className="text-xl font-bold">Validation Ready</h3>
+                          <h3 className="text-xl font-bold">
+                            {fileReviewBlocked
+                              ? "File review incomplete"
+                              : "Validation Ready"}
+                          </h3>
                           <p className="mt-1 text-sm text-indigo-100">
-                            Review detected issues before finalizing the import.
+                            {fileReviewBlocked
+                              ? "Fix mandatory columns and blank leadStatus before continuing."
+                              : "Review detected issues before finalizing the import."}
                           </p>
+                          {fileReviewNotice ? (
+                            <p className="mt-2 rounded-xl bg-white/10 px-3 py-2 text-sm text-white">
+                              {fileReviewNotice}
+                            </p>
+                          ) : null}
                         </div>
                       </div>
-                      <motion.button
-                        whileHover={{ y: -2, scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        onClick={() => navigate("/single-upload/members/review")}
-                        className="inline-flex items-center justify-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-semibold text-indigo-700 shadow-lg shadow-indigo-950/20"
-                      >
-                        Continue to Review
-                        <ArrowRight size={16} />
-                      </motion.button>
+                      <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                        <motion.button
+                          whileHover={
+                            fileReviewBlocked ? undefined : { y: -2, scale: 1.02 }
+                          }
+                          whileTap={fileReviewBlocked ? undefined : { scale: 0.98 }}
+                          disabled={fileReviewBlocked}
+                          onClick={() => {
+                            if (!fileReviewBlocked) {
+                              navigate("/single-upload/members/review");
+                            }
+                          }}
+                          className={`inline-flex items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-semibold shadow-lg ${
+                            fileReviewBlocked
+                              ? "cursor-not-allowed bg-white/40 text-indigo-100/70 shadow-none"
+                              : "bg-white text-indigo-700 shadow-indigo-950/20"
+                          }`}
+                        >
+                          Continue to Review
+                          <ArrowRight size={16} />
+                        </motion.button>
+                        {fileReviewBlocked ? (
+                          <div className="flex flex-wrap justify-end gap-2">
+                            {canAutoAddMissingColumns ? (
+                              <Button
+                                className="bg-white text-indigo-700 hover:bg-indigo-50"
+                                disabled={addingMissingColumns}
+                                onClick={() => setShowFileReviewAlert(true)}
+                              >
+                                Resolve file review
+                              </Button>
+                            ) : null}
+                            <Button
+                              variant="secondary"
+                              className="border-white/30 bg-white/10 text-white hover:bg-white/20"
+                              onClick={() =>
+                                navigate("/single-upload/members/upload")
+                              }
+                            >
+                              Upload corrected file
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   </motion.div>
                 ) : null}
@@ -770,16 +972,15 @@ export function MembersProcessingPage() {
                   percent={checksPercent}
                   gradient="from-emerald-500 to-green-400"
                 />
-                <div className="grid grid-cols-3 gap-2 border-t border-violet-200/60 pt-3 dark:border-violet-900/50">
+                <div className="grid grid-cols-2 gap-2 border-t border-violet-200/60 pt-3 dark:border-violet-900/50">
                   <CompactStat
-                    label="Passed"
-                    value={passedChecks.toLocaleString()}
+                    label="Checks done"
+                    value={
+                      progress?.totalSteps
+                        ? `${progress.completedSteps}/${progress.totalSteps}`
+                        : "—"
+                    }
                     tone="text-emerald-600 dark:text-emerald-400"
-                  />
-                  <CompactStat
-                    label="Issues"
-                    value={(progress?.potentialIssues ?? 0).toLocaleString()}
-                    tone="text-amber-600 dark:text-amber-400"
                   />
                   <CompactStat
                     label="Remaining"
@@ -791,59 +992,6 @@ export function MembersProcessingPage() {
                     tone="text-indigo-600 dark:text-indigo-400"
                   />
                 </div>
-              </div>
-            </section>
-
-            <section className="flex min-h-52 flex-col overflow-hidden rounded-[20px] border border-slate-700/70 bg-[#0b1020] shadow-[0_24px_70px_-30px_rgba(15,23,42,0.9)] xl:min-h-0 xl:flex-1">
-              <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex gap-1.5">
-                    <span className="h-2.5 w-2.5 rounded-full bg-rose-500" />
-                    <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
-                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-                  </div>
-                  <Terminal size={15} className="text-violet-400" />
-                  <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-                    Validation engine
-                  </span>
-                </div>
-                <CopyCheck size={15} className="text-slate-500" />
-              </div>
-              <div
-                ref={terminalRef}
-                className="validation-terminal-scrollbar h-52 overflow-y-auto p-4 font-mono text-xs xl:h-auto xl:min-h-0 xl:flex-1"
-              >
-                <AnimatePresence initial={false}>
-                  {engineLogs.map((log, index) => (
-                    <motion.div
-                      key={`${log.level}-${log.message}`}
-                      initial={{ opacity: 0, x: -8 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: index * 0.04 }}
-                      className="mb-3 flex items-start gap-3"
-                    >
-                      <span
-                        className={`w-16 shrink-0 font-semibold ${
-                          log.level === "SUCCESS"
-                            ? "text-emerald-400"
-                            : log.level === "WARNING"
-                              ? "text-amber-400"
-                              : log.level === "ERROR"
-                                ? "text-rose-400"
-                                : "text-cyan-400"
-                        }`}
-                      >
-                        {log.level}
-                      </span>
-                      <span className="leading-relaxed text-slate-300">
-                        {log.message}
-                      </span>
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-                {!result && !error ? (
-                  <span className="inline-block h-4 w-2 animate-pulse bg-violet-400" />
-                ) : null}
               </div>
             </section>
           </motion.aside>

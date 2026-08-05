@@ -160,6 +160,41 @@ class ValidationJobStore:
             job.last_accessed = monotonic()
             return job.service
 
+    def update_completed_result(
+        self,
+        validation_id: str,
+        result: ValidationResponse,
+        service: MembersValidationService,
+    ) -> None:
+        """Replace a completed job's result after a repair pass."""
+        issue_counts: dict[str, int] = {}
+        for row in result.affected_rows:
+            issue_counts[row.rule_id] = issue_counts.get(row.rule_id, 0) + 1
+
+        with self._lock:
+            job = self._jobs[validation_id]
+            updated_checks = [
+                {
+                    **check,
+                    "status": "completed",
+                    "issues_found": issue_counts.get(check["check_id"], 0),
+                }
+                for check in job.checks
+            ]
+
+        self._update(
+            validation_id,
+            status="completed",
+            stage="complete",
+            current_step="Validation complete",
+            validation_score=result.summary.validation_score,
+            potential_issues=len(result.affected_rows),
+            result=result,
+            service=service,
+            completed_at=monotonic(),
+            checks=updated_checks,
+        )
+
     def _get(self, validation_id: str) -> ValidationJob:
         with self._lock:
             return self._jobs[validation_id]

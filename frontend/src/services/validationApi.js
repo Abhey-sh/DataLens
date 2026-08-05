@@ -8,17 +8,6 @@ const api = axios.create({
 
 const resultKey = "membersValidationResult";
 
-export async function uploadMembers(file, options = {}) {
-  const formData = new FormData();
-  formData.append("file", file);
-  const response = await api.post("/members/validate", formData, {
-    ...options,
-  });
-  sessionStorage.setItem(resultKey, JSON.stringify(response.data));
-  sessionStorage.setItem("uploadedFile", file.name);
-  return response.data;
-}
-
 export async function startMembersValidation(file, options = {}) {
   const formData = new FormData();
   formData.append("file", file);
@@ -32,6 +21,18 @@ export async function startMembersValidation(file, options = {}) {
 export async function getMembersValidationProgress(validationId, options = {}) {
   const response = await api.get(
     `/members/validate/${validationId}/progress`,
+    options,
+  );
+  if (response.data.result) {
+    saveValidationResult(response.data.result);
+  }
+  return response.data;
+}
+
+export async function addMissingMandatoryColumns(options = {}) {
+  const response = await api.post(
+    "/members/file-review/add-missing-columns",
+    null,
     options,
   );
   if (response.data.result) {
@@ -69,54 +70,9 @@ async function downloadReport(reportName, format = "csv") {
 }
 
 export const downloadSummary = (format) => downloadReport("summary", format);
-export const downloadErrors = (format) => downloadReport("errors", format);
 export const downloadAudit = (format) => downloadReport("audit", format);
 export const downloadCorrected = (format) =>
   downloadReport("corrected", format);
-
-export async function applyMembersAutoFix(ruleId, options = {}) {
-  const response = await api.post(
-    "/members/auto-fix",
-    { ruleId },
-    options,
-  );
-  return response.data;
-}
-
-export async function applyMemberIssueAutoFix(
-  ruleId,
-  rowNumber,
-  options = {},
-) {
-  const response = await api.post(
-    "/members/auto-fix/issue",
-    { ruleId, rowNumber },
-    options,
-  );
-  return response.data;
-}
-
-export async function applyMemberManualEdit(
-  rowNumber,
-  fieldName,
-  value,
-  options = {},
-) {
-  const response = await api.post(
-    "/members/edit",
-    { rowNumber, fieldName, value },
-    options,
-  );
-  return response.data;
-}
-
-export async function getMembersFileRows(offset = 0, limit = 50, options = {}) {
-  const response = await api.get("/members/rows", {
-    ...options,
-    params: { ...options.params, offset, limit },
-  });
-  return response.data;
-}
 
 export function getApiErrorMessage(error, fallback = "Request failed") {
   return error.response?.data?.detail || error.message || fallback;
