@@ -45,7 +45,7 @@ export function MembersUploadPage() {
           </h1>
           <p className="mt-2 max-w-2xl text-slate-600 dark:text-slate-400">
             Prepare your CSV for a structured validation pass with field-level
-            checks and business rules.
+            quality checks.
           </p>
         </div>
         <Stepper currentStep={2} />
@@ -140,8 +140,8 @@ export function MembersUploadPage() {
                 Structured checks
               </p>
               <p className="mt-1">
-                A validation engine inspects required fields, formatting,
-                duplicates, and business rules.
+                A validation engine inspects required fields, formatting, and
+                data quality checks.
               </p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 dark:border-slate-800 dark:bg-slate-900/60">
@@ -149,8 +149,7 @@ export function MembersUploadPage() {
                 Smart review
               </p>
               <p className="mt-1">
-                The review page highlights warnings and errors so you can act
-                confidently.
+                Confirm validation totals before finalizing the import.
               </p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 dark:border-slate-800 dark:bg-slate-900/60">
@@ -158,7 +157,7 @@ export function MembersUploadPage() {
                 Export-ready outputs
               </p>
               <p className="mt-1">
-                Corrected CSVs, error reports, and summaries are generated for
+                Corrected CSVs, audit trails, and summaries are generated for
                 downstream action.
               </p>
             </div>

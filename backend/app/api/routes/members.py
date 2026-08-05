@@ -25,6 +25,7 @@ from app.core.exceptions import (
     ValidationException,
 )
 from app.schemas.validation import (
+    AddMissingColumnsResponse,
     AutoFixRequest,
     AutoFixIssueRequest,
     FileRowsResponse,
@@ -228,6 +229,38 @@ async def download_corrected(
     validation_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
 ) -> StreamingResponse:
     return _download_report("corrected", format, validation_session)
+
+
+@router.post(
+    "/members/file-review/add-missing-columns",
+    response_model=AddMissingColumnsResponse,
+)
+async def add_missing_mandatory_columns(
+    validation_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+) -> AddMissingColumnsResponse:
+    """Add missing mandatory columns as empty fields and re-validate."""
+    service = _require_session(validation_session)
+    try:
+        added_columns, result = service.add_missing_mandatory_columns()
+    except BusinessRuleException as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if validation_session and validation_jobs.service(validation_session):
+        validation_jobs.update_completed_result(
+            validation_session,
+            result,
+            service,
+        )
+
+    return AddMissingColumnsResponse(
+        status="success",
+        message=(
+            f"Added {len(added_columns)} missing column"
+            f"{'' if len(added_columns) == 1 else 's'} and re-validated the file."
+        ),
+        added_columns=added_columns,
+        result=result,
+    )
 
 
 @router.post("/members/auto-fix", response_model=OperationResponse)

@@ -157,6 +157,13 @@ class OperationResponse(ApiSchema):
     message: str
 
 
+class AddMissingColumnsResponse(ApiSchema):
+    status: str
+    message: str
+    added_columns: list[str] = Field(default_factory=list)
+    result: ValidationResponse
+
+
 # Compatibility aliases for existing imports.
 ValidationSummarySchema = ValidationSummary
 ValidationResponseSchema = ValidationResponse

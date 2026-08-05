@@ -11,6 +11,7 @@ from loguru import logger
 from app.validation.cleaning import DataCleaningPipeline
 from app.validation.base import ValidationPipeline
 from app.core.exceptions import (
+    BusinessRuleException,
     FileValidationException,
 )
 from app.reports.report_generator import ReportGenerator
@@ -24,6 +25,7 @@ from app.schemas.validation import (
 )
 from app.utils.csv_reader import read_csv_bytes
 from app.validation.members.validators import (
+    REQUIRED_HEADERS,
     RequiredHeaderValidator,
     StudioForeignIdValidator,
     RequiredFieldValidator,
@@ -121,6 +123,42 @@ class MembersValidationService:
         logger.info(f"Validation complete: {len(issues)} total issues found")
         return self.response
 
+    def missing_mandatory_columns(self) -> list[str]:
+        """Return mandatory headers that are still missing from the working dataset."""
+        if not self.pipeline or self.pipeline.working_df is None:
+            raise BusinessRuleException("No active validation dataset available")
+        return [
+            column
+            for column in REQUIRED_HEADERS
+            if column not in self.pipeline.working_df.columns
+        ]
+
+    def add_missing_mandatory_columns(self) -> tuple[list[str], ValidationResponse]:
+        """
+        Add any missing mandatory columns as empty fields, then re-run validation.
+        """
+        if not self.pipeline or self.pipeline.working_df is None:
+            raise BusinessRuleException("No active validation dataset available")
+
+        missing = self.missing_mandatory_columns()
+        if not missing:
+            raise BusinessRuleException("No missing mandatory columns to add")
+
+        updated = self.pipeline.working_df.copy()
+        for column in missing:
+            updated[column] = pd.NA
+            logger.info(f"Added missing mandatory column: {column}")
+
+        # Re-validate without live progress updates for this repair pass
+        previous_callback = self.progress_callback
+        self.progress_callback = None
+        try:
+            result = self.validate_dataframe(updated)
+        finally:
+            self.progress_callback = previous_callback
+
+        return missing, result
+
     def _register_validators(self):
         """Register all validators in the pipeline."""
         # File-level validators
@@ -169,6 +207,8 @@ class MembersValidationService:
                         if issue.row_number > 0
                     }
                 )
+                if unique_rows == 0 and rule_issues_list:
+                    unique_rows = len(rule_issues_list)
                 severity = self._highest_severity(rule_issues_list)
                 business_rules.append(
                     BusinessRuleResult(
@@ -217,7 +257,9 @@ class MembersValidationService:
         affected_rows = [
             AffectedRow(
                 row_number=issue.row_number,
-                member_id=self._member_id(issue.row_number),
+                member_id=self._member_id(issue.row_number)
+                if issue.row_number > 0
+                else None,
                 rule_id=issue.rule_id,
                 rule_name=issue.rule_name,
                 field_name=issue.field_name,
@@ -231,7 +273,6 @@ class MembersValidationService:
                 action="Auto Fix" if issue.auto_fix_available else "Edit",
             )
             for issue in issues
-            if issue.row_number > 0
         ]
 
         report_base = "/api/members/report"

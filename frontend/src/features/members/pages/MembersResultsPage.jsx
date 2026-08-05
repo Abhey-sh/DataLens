@@ -14,7 +14,6 @@ import { Stepper } from "../../../components/ui/Stepper";
 import {
   downloadAudit,
   downloadCorrected,
-  downloadErrors,
   downloadSummary,
   getApiErrorMessage,
   getValidationResult,
@@ -32,16 +31,9 @@ export function MembersResultsPage() {
   const stats = [
     { label: "Records", value: result.summary.totalRecords, tone: "info" },
     { label: "Valid", value: result.summary.valid, tone: "success" },
-    { label: "Warnings", value: result.summary.warnings, tone: "warning" },
-    {
-      label: "Critical Errors",
-      value: result.summary.criticalErrors,
-      tone: "danger",
-    },
   ];
   const reports = [
     ["Summary", downloadSummary],
-    ["Errors", downloadErrors],
     ["Audit", downloadAudit],
     ["Corrected Dataset", downloadCorrected],
   ];
@@ -86,7 +78,7 @@ export function MembersResultsPage() {
                 Your dataset is ready to review and export.
               </h2>
               <p className="mt-3 text-slate-600 dark:text-slate-400">
-                The validation run generated a corrected CSV, an error report,
+                The validation run generated a corrected CSV, an audit trail,
                 and a summary artifact for downstream teams.
               </p>
             </div>
