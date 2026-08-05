@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   Gauge,
   Languages,
+  ListChecks,
   LoaderCircle,
   ScanSearch,
   ShieldCheck,
@@ -63,6 +64,13 @@ const pipelineSteps = [
     gradient: "from-violet-600 to-indigo-500",
   },
   {
+    id: "blanks",
+    title: "Check blank values",
+    description: "Scanning validated columns for missing or empty cells",
+    icon: ListChecks,
+    gradient: "from-pink-500 to-violet-500",
+  },
+  {
     id: "prepare",
     title: "Prepare review dataset",
     description: "Organizing issues and migration-ready records",
@@ -111,7 +119,7 @@ export function MembersProcessingPage() {
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(null);
   const [attempt, setAttempt] = useState(0);
-  const [showFileReviewAlert, setShowFileReviewAlert] = useState(false);
+  const [showFileReviewAlert, setShowFileReviewAlert] = useState(true);
   const [addingMissingColumns, setAddingMissingColumns] = useState(false);
   const [fileReviewNotice, setFileReviewNotice] = useState("");
 
@@ -166,12 +174,17 @@ export function MembersProcessingPage() {
 
   const fileReviewBlocked = fileReviewIssues.length > 0;
   const canAutoAddMissingColumns = missingMandatoryColumns.length > 0;
-
-  useEffect(() => {
-    if (fileReviewIssues.length) {
-      setShowFileReviewAlert(true);
-    }
-  }, [fileReviewIssues]);
+  const blankValuesFound = useMemo(
+    () =>
+      result?.affectedRows?.filter(
+        (issue) =>
+          issue.rowNumber > 0 &&
+          (issue.issueType === "blank" ||
+            issue.currentValue == null ||
+            String(issue.currentValue).trim() === ""),
+      ).length ?? 0,
+    [result],
+  );
 
   useEffect(() => {
     const file = location.state?.file;
@@ -292,10 +305,15 @@ export function MembersProcessingPage() {
       }
       return progress?.stage === "validating" ? "running" : "queued";
     }
-    if (step.id === "prepare") {
+    if (step.id === "blanks") {
       if (error) return "not-run";
-      if (result) return "completed";
-      if (progress?.stage === "preparing") return "running";
+      if (
+        result ||
+        progress?.status === "completed" ||
+        progress?.stage === "preparing"
+      ) {
+        return "completed";
+      }
 
       const checks = progress?.checks ?? [];
       const fileReviewFinished = FILE_REVIEW_CHECK_IDS.every((id) => {
@@ -306,6 +324,22 @@ export function MembersProcessingPage() {
         );
       });
       return progress?.stage === "validating" && fileReviewFinished
+        ? "running"
+        : "queued";
+    }
+    if (step.id === "prepare") {
+      if (error) return "not-run";
+      if (result) return "completed";
+      if (progress?.stage === "preparing") return "running";
+
+      const checks = progress?.checks ?? [];
+      const allChecksFinished =
+        checks.length > 0 &&
+        checks.every(
+          (check) =>
+            check.status === "completed" || check.status === "failed",
+        );
+      return progress?.stage === "validating" && allChecksFinished
         ? "running"
         : "queued";
     }
@@ -335,7 +369,7 @@ export function MembersProcessingPage() {
     setResult(null);
     setError("");
     setProgress(null);
-    setShowFileReviewAlert(false);
+    setShowFileReviewAlert(true);
     setFileReviewNotice("");
     setAddingMissingColumns(false);
     setAttempt((current) => current + 1);
@@ -690,6 +724,12 @@ export function MembersProcessingPage() {
                   {pipelineSteps.map((step, index) => {
                     const status = getStepStatus(step);
                     const Icon = step.icon;
+                    const description =
+                      step.id === "blanks" && result
+                        ? `${blankValuesFound.toLocaleString()} blank value${
+                            blankValuesFound === 1 ? "" : "s"
+                          } detected across validated columns`
+                        : step.description;
                     const duration =
                       step.id === "file-review" && completedCheckDuration > 0
                         ? formatDuration(completedCheckDuration)
@@ -735,7 +775,7 @@ export function MembersProcessingPage() {
                             {step.title}
                           </h3>
                           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                            {step.description}
+                            {description}
                           </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">

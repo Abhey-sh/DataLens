@@ -1,5 +1,6 @@
 export {
   addMissingMandatoryColumns,
+  bulkFillBlankValues,
   downloadAudit,
   downloadCorrected,
   downloadSummary,

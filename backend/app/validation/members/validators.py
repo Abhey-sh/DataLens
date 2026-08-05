@@ -10,6 +10,7 @@ from email_validator import validate_email, EmailNotValidError
 import phonenumbers
 import pycountry
 from datetime import datetime
+import unicodedata
 
 from app.core.exceptions import (
     ValidationIssue,
@@ -480,96 +481,143 @@ class CountryCodeValidator(FieldValidator):
         return df
 
 
-class FirstNameDefaultValidator(RowValidator):
-    """Apply default for blank first name."""
+def _clean_name(value: object) -> str:
+    """Return a conservative, letters-and-spaces-only name candidate."""
+    if pd.isna(value):
+        return ""
+
+    normalized = unicodedata.normalize("NFKC", str(value)).strip()
+    if not any(character.isalpha() for character in normalized):
+        return ""
+
+    cleaned: list[str] = []
+    for index, character in enumerate(normalized):
+        if character.isalpha() or character.isspace():
+            cleaned.append(character)
+        elif (
+            character == "0"
+            and index > 0
+            and index + 1 < len(normalized)
+            and normalized[index - 1].isalpha()
+            and normalized[index + 1].isalpha()
+        ):
+            # A zero between letters is the one configured high-confidence
+            # substitution (for example, "j0hn" -> "john").
+            cleaned.append("o")
+
+    return " ".join("".join(cleaned).split())
+
+
+class _NameDefaultValidator(RowValidator):
+    """Clean a name field and apply its configured default if it becomes blank."""
+
+    def __init__(
+        self,
+        *,
+        rule_id: str,
+        rule_name: str,
+        field_name: str,
+        default_value: str,
+    ):
+        super().__init__(
+            rule_id=rule_id,
+            rule_name=rule_name,
+            category="Auto Defaults",
+            severity=ValidationSeverity.INFO,
+            description=(
+                f"{field_name} must contain letters and spaces only. "
+                f"Values with no remaining letters default to '{default_value}'."
+            ),
+            auto_fix_available=True,
+            default_value=default_value,
+        )
+        self.field_name = field_name
+
+    def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
+        """Find blank or non-alphabetic names and provide deterministic fixes."""
+        if self.field_name not in df.columns:
+            return []
+
+        issues = []
+        for row_idx, name_value in df[self.field_name].items():
+            current_value = None if pd.isna(name_value) else str(name_value)
+            cleaned_value = _clean_name(name_value)
+            is_originally_blank = (
+                current_value is None or not current_value.strip()
+            )
+
+            if is_originally_blank:
+                suggested_value = self.default_value
+                issue_type = "blank"
+                message = (
+                    f"Blank {self.field_name} will be set to "
+                    f"'{self.default_value}'"
+                )
+            elif not cleaned_value:
+                suggested_value = self.default_value
+                issue_type = "blank"
+                message = (
+                    f"{self.field_name} contains no usable letters after "
+                    f"cleaning and will be set to '{self.default_value}'"
+                )
+            elif cleaned_value != current_value.strip():
+                suggested_value = cleaned_value
+                issue_type = "validation"
+                message = (
+                    f"{self.field_name} contains numbers or special characters"
+                )
+            else:
+                continue
+
+            issues.append(
+                ValidationIssue(
+                    row_number=row_idx + 1,
+                    rule_id=self.rule_id,
+                    rule_name=self.rule_name,
+                    field_name=self.field_name,
+                    current_value=current_value,
+                    suggested_value=suggested_value,
+                    severity=self.severity,
+                    message=message,
+                    auto_fix_available=True,
+                    issue_type=issue_type,
+                )
+            )
+
+        return issues
+
+    def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
+        """Apply the exact deterministic cleanup represented by this rule."""
+        if self.field_name in df.columns:
+            cleaned_value = _clean_name(df.at[row_idx, self.field_name])
+            df.at[row_idx, self.field_name] = (
+                cleaned_value or self.default_value
+            )
+        return df
+
+
+class FirstNameDefaultValidator(_NameDefaultValidator):
+    """Clean first names and default values that become blank."""
 
     def __init__(self):
         super().__init__(
             rule_id="first_name_default",
-            rule_name="First Name Default",
-            category="Auto Defaults",
-            severity=ValidationSeverity.INFO,
-            description="Blank first name will be set to 'Change Me'",
-            auto_fix_available=True,
+            rule_name="First Name Cleanup",
+            field_name="firstName",
             default_value="Change Me",
         )
 
-    def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
-        """Find rows with blank first name."""
-        issues = []
-        
-        if "firstName" not in df.columns:
-            return issues
-        
-        for row_idx, name_val in df["firstName"].items():
-            if pd.isna(name_val) or name_val == "":
-                issues.append(
-                    ValidationIssue(
-                        row_number=row_idx + 1,
-                        rule_id=self.rule_id,
-                        rule_name=self.rule_name,
-                        field_name="firstName",
-                        current_value=None,
-                        suggested_value=self.default_value,
-                        severity=self.severity,
-                        message="Blank first name will be set to 'Change Me'",
-                        auto_fix_available=True,
-                    )
-                )
-        
-        return issues
 
-    def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
-        """Apply first name default."""
-        if "firstName" in df.columns:
-            df.at[row_idx, "firstName"] = self.default_value
-        return df
-
-
-class LastNameDefaultValidator(RowValidator):
-    """Apply default for blank last name."""
+class LastNameDefaultValidator(_NameDefaultValidator):
+    """Clean last names and default values that become blank."""
 
     def __init__(self):
         super().__init__(
             rule_id="last_name_default",
-            rule_name="Last Name Default",
-            category="Auto Defaults",
-            severity=ValidationSeverity.INFO,
-            description="Blank last name will be set to 'Me'",
-            auto_fix_available=True,
+            rule_name="Last Name Cleanup",
+            field_name="lastName",
             default_value="Me",
         )
-
-    def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
-        """Find rows with blank last name."""
-        issues = []
-        
-        if "lastName" not in df.columns:
-            return issues
-        
-        for row_idx, name_val in df["lastName"].items():
-            if pd.isna(name_val) or name_val == "":
-                issues.append(
-                    ValidationIssue(
-                        row_number=row_idx + 1,
-                        rule_id=self.rule_id,
-                        rule_name=self.rule_name,
-                        field_name="lastName",
-                        current_value=None,
-                        suggested_value="Me",
-                        severity=self.severity,
-                        message="Blank last name will be set to 'Me'",
-                        auto_fix_available=True,
-                    )
-                )
-        
-        return issues
-
-    def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
-        """Apply last name default."""
-        if "lastName" in df.columns:
-            df.at[row_idx, "lastName"] = "Me"
-        return df
 
 
 class PostalCodeDefaultValidator(RowValidator):
