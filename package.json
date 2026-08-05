@@ -1,0 +1,19 @@
+{
+  "name": "datalens",
+  "private": true,
+  "version": "1.0.0",
+  "description": "DataLens — CSV validation platform",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:full": "node scripts/dev.mjs",
+    "start": "npm run dev",
+    "dev:backend": "node scripts/run-backend.mjs",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "install:frontend": "npm --prefix frontend install",
+    "install:backend": "node scripts/setup-backend.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

@@ -1,0 +1,35 @@
+# Dependencies / envs
+node_modules/
+frontend/node_modules/
+backend/.venv/
+.venv/
+venv/
+.env
+.env.local
+.env.*
+!.env.example
+!**/.env.example
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+*.egg-info/
+
+# Build / IDE
+frontend/dist/
+.vite/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.cursor/
+*.log
+.coverage
+coverage.xml
+htmlcov/
+*.sqlite
+*.sqlite3
