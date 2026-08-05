@@ -26,6 +26,8 @@ from app.core.exceptions import (
 )
 from app.schemas.validation import (
     AddMissingColumnsResponse,
+    BulkFillRequest,
+    BulkFillResponse,
     AutoFixRequest,
     AutoFixIssueRequest,
     FileRowsResponse,
@@ -308,6 +310,39 @@ async def apply_manual_edit(
     except BusinessRuleException as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OperationResponse(status="success", message="Manual edit applied")
+
+
+@router.post("/members/bulk-fill", response_model=BulkFillResponse)
+async def bulk_fill_blank_cells(
+    request: BulkFillRequest,
+    validation_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+) -> BulkFillResponse:
+    """Fill blank cells in one allowed column and re-validate the dataset."""
+    service = _require_session(validation_session)
+    try:
+        updated_rows, result = service.bulk_fill_blank_cells(
+            request.field_name, request.value
+        )
+    except BusinessRuleException as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if validation_session and validation_jobs.service(validation_session):
+        validation_jobs.update_completed_result(
+            validation_session,
+            result,
+            service,
+        )
+
+    return BulkFillResponse(
+        status="success",
+        message=(
+            f"Filled {updated_rows} blank value"
+            f"{'' if updated_rows == 1 else 's'} in {request.field_name}."
+        ),
+        field_name=request.field_name,
+        updated_rows=updated_rows,
+        result=result,
+    )
 
 
 @router.get("/health", response_model=HealthResponse, tags=["health"])
