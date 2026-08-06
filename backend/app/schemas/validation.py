@@ -155,6 +155,7 @@ class ManualEditRequest(ApiSchema):
 class OperationResponse(ApiSchema):
     status: str
     message: str
+    result: ValidationResponse | None = None
 
 
 class AddMissingColumnsResponse(ApiSchema):

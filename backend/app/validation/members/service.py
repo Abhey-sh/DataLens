@@ -24,19 +24,15 @@ from app.schemas.validation import (
     ValidationSummary,
 )
 from app.utils.csv_reader import read_csv_bytes
+from app.validation.members.format_validators import (
+    BirthDateValidator,
+    CountryCodeValidator,
+    EmailValidator,
+)
 from app.validation.members.validators import (
     REQUIRED_HEADERS,
     RequiredHeaderValidator,
-    StudioForeignIdValidator,
     RequiredFieldValidator,
-    EmailValidator,
-    GenderValidator,
-    BirthDateValidator,
-    LeadStatusValidator,
-    CountryCodeValidator,
-    FirstNameDefaultValidator,
-    LastNameDefaultValidator,
-    PostalCodeDefaultValidator,
 )
 
 
@@ -160,25 +156,21 @@ class MembersValidationService:
         return missing, result
 
     def _register_validators(self):
-        """Register all validators in the pipeline."""
-        # File-level validators
+        """Register validators used in the current review pass.
+
+        Temporary scope: Format Validation (email, birth date, country code)
+        plus file/required gates for upload flow.
+        Other field cleaners stay in validators.py for later re-enable.
+        """
         self.pipeline.register_file_validator(RequiredHeaderValidator())
-        self.pipeline.register_file_validator(StudioForeignIdValidator())
-
-        # Row-level validators
         self.pipeline.register_row_validator(RequiredFieldValidator())
-        self.pipeline.register_row_validator(FirstNameDefaultValidator())
-        self.pipeline.register_row_validator(LastNameDefaultValidator())
-        self.pipeline.register_row_validator(PostalCodeDefaultValidator())
-
-        # Field-level validators
         self.pipeline.register_field_validator(EmailValidator())
-        self.pipeline.register_field_validator(GenderValidator())
         self.pipeline.register_field_validator(BirthDateValidator())
-        self.pipeline.register_field_validator(LeadStatusValidator())
         self.pipeline.register_field_validator(CountryCodeValidator())
 
-        logger.info("All validators registered")
+        logger.info(
+            "Validators registered (format validation: email, birth date, country code)"
+        )
 
     def _build_response(self, issues: list) -> ValidationResponse:
         """Build the validation response."""
@@ -250,10 +242,8 @@ class MembersValidationService:
             execution_time=round(self.execution_time, 4),
         )
 
-        row_data_by_number = {
-            row_number: self._row_data(row_number)
-            for row_number in affected_row_numbers
-        }
+        # Skip full row payloads in the review response — they inflate
+        # sessionStorage and freeze the Review UI on large files.
         affected_rows = [
             AffectedRow(
                 row_number=issue.row_number,
@@ -268,7 +258,7 @@ class MembersValidationService:
                 severity=self._severity_label(issue.severity.value),
                 reason=issue.message,
                 auto_fix_available=issue.auto_fix_available,
-                row_data=row_data_by_number.get(issue.row_number, {}),
+                row_data={},
                 status="Pending",
                 action="Auto Fix" if issue.auto_fix_available else "Edit",
             )
@@ -291,23 +281,27 @@ class MembersValidationService:
 
         return response
 
-    def apply_auto_fix(self, rule_id: str):
-        """Apply automatic fix for a rule."""
+    def apply_auto_fix(self, rule_id: str) -> ValidationResponse:
+        """Apply automatic fix for a rule, then re-validate."""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
         self.pipeline.apply_auto_fix(rule_id)
         logger.info(f"Auto-fix applied for rule {rule_id}")
+        return self._revalidate()
 
-    def apply_issue_auto_fix(self, rule_id: str, row_number: int) -> None:
-        """Apply one configured automatic fix."""
+    def apply_issue_auto_fix(
+        self, rule_id: str, row_number: int
+    ) -> ValidationResponse:
+        """Apply one configured automatic fix, then re-validate."""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
         self.pipeline.apply_issue_auto_fix(rule_id, row_number)
+        return self._revalidate()
 
     def apply_manual_edit(
         self, row_number: int, field_name: str, value: str
-    ) -> None:
-        """Apply and audit a user-provided value for one cell."""
+    ) -> ValidationResponse:
+        """Apply and audit a user-provided value for one cell, then re-validate."""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
         if field_name not in self.pipeline.working_df.columns:
@@ -326,6 +320,24 @@ class MembersValidationService:
             changed_by="user",
             auto=False,
         )
+        return self._revalidate()
+
+    def _revalidate(self) -> ValidationResponse:
+        """Re-run validation on the working dataset after a repair/edit."""
+        if not self.pipeline or self.pipeline.working_df is None:
+            raise BusinessRuleException("No active validation dataset available")
+
+        updated = self.pipeline.working_df.copy()
+        audit = list(self.pipeline.audit_log)
+        previous_callback = self.progress_callback
+        self.progress_callback = None
+        try:
+            result = self.validate_dataframe(updated)
+            if self.pipeline:
+                self.pipeline.audit_log = audit + self.pipeline.audit_log
+            return result
+        finally:
+            self.progress_callback = previous_callback
 
     def get_audit_log(self) -> list[dict]:
         """Get the audit log."""
