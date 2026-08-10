@@ -32,7 +32,14 @@ from app.validation.members.format_validators import (
 from app.validation.members.validators import (
     REQUIRED_HEADERS,
     RequiredHeaderValidator,
+    StudioForeignIdValidator,
     RequiredFieldValidator,
+    FirstNameDefaultValidator,
+    LastNameDefaultValidator,
+    PostalCodeDefaultValidator,
+    GenderValidator,
+    LeadStatusValidator,
+    JoinedDateValidator,
 )
 
 BULK_FILL_PROTECTED_FIELDS = {
@@ -162,21 +169,23 @@ class MembersValidationService:
         return missing, result
 
     def _register_validators(self):
-        """Register validators used in the current review pass.
-
-        Temporary scope: Format Validation (email, birth date, country code)
-        plus file/required gates for upload flow.
-        Other field cleaners stay in validators.py for later re-enable.
-        """
+        """Register existing member rules plus dedicated format validators."""
         self.pipeline.register_file_validator(RequiredHeaderValidator())
+        self.pipeline.register_file_validator(StudioForeignIdValidator())
+
         self.pipeline.register_row_validator(RequiredFieldValidator())
+        self.pipeline.register_row_validator(FirstNameDefaultValidator())
+        self.pipeline.register_row_validator(LastNameDefaultValidator())
+        self.pipeline.register_field_validator(PostalCodeDefaultValidator())
+
         self.pipeline.register_field_validator(EmailValidator())
+        self.pipeline.register_field_validator(GenderValidator())
         self.pipeline.register_field_validator(BirthDateValidator())
+        self.pipeline.register_field_validator(LeadStatusValidator())
+        self.pipeline.register_field_validator(JoinedDateValidator())
         self.pipeline.register_field_validator(CountryCodeValidator())
 
-        logger.info(
-            "Validators registered (format validation: email, birth date, country code)"
-        )
+        logger.info("All member validators registered")
 
     def _build_response(self, issues: list) -> ValidationResponse:
         """Build the validation response."""
@@ -284,8 +293,10 @@ class MembersValidationService:
             execution_time=round(self.execution_time, 4),
         )
 
-        # Skip full row payloads in the review response — they inflate
-        # sessionStorage and freeze the Review UI on large files.
+        row_data_by_number = {
+            row_number: self._row_data(row_number)
+            for row_number in affected_row_numbers
+        }
         affected_rows = [
             AffectedRow(
                 row_number=issue.row_number,
@@ -300,7 +311,8 @@ class MembersValidationService:
                 severity=self._severity_label(issue.severity.value),
                 reason=issue.message,
                 auto_fix_available=issue.auto_fix_available,
-                row_data={},
+                issue_type=issue.issue_type,
+                row_data=row_data_by_number.get(issue.row_number, {}),
                 status="Pending",
                 action="Auto Fix" if issue.auto_fix_available else "Edit",
             )
@@ -380,6 +392,108 @@ class MembersValidationService:
             return result
         finally:
             self.progress_callback = previous_callback
+
+    def bulk_fill_blank_cells(
+        self, field_name: str, value: str
+    ) -> tuple[int, ValidationResponse]:
+        """Fill physical and rule-classified blank cells, then re-validate."""
+        if not self.pipeline or self.pipeline.working_df is None:
+            raise BusinessRuleException("No active validation dataset available")
+
+        normalized_field = field_name.strip()
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise BusinessRuleException("Bulk fill value cannot be blank")
+        if normalized_field not in self.pipeline.working_df.columns:
+            raise BusinessRuleException(f"Unknown field: {normalized_field}")
+        if normalized_field in BULK_FILL_PROTECTED_FIELDS:
+            raise BusinessRuleException(
+                f"Bulk fill is not allowed for unique field: {normalized_field}"
+            )
+
+        current = self.pipeline.working_df
+        blank_mask = (
+            current[normalized_field].isna()
+            | current[normalized_field]
+            .astype("string")
+            .str.strip()
+            .eq("")
+            .fillna(True)
+        )
+        eligible_indices = set(current.index[blank_mask].tolist())
+        eligible_indices.update(
+            issue.row_number - 1
+            for issue in self.pipeline.all_issues
+            if issue.row_number > 0
+            and issue.field_name == normalized_field
+            and issue.issue_type == "blank"
+            and issue.row_number - 1 in current.index
+        )
+        affected_indices = [
+            row_index
+            for row_index in current.index
+            if row_index in eligible_indices
+        ]
+        if not affected_indices:
+            raise BusinessRuleException(
+                f"No blank values found in {normalized_field}"
+            )
+
+        previous_pipeline = self.pipeline
+        previous_response = self.response
+        previous_execution_time = self.execution_time
+        previous_audit = list(previous_pipeline.audit_log)
+        old_values = {
+            row_index: (
+                None
+                if pd.isna(current.at[row_index, normalized_field])
+                else str(current.at[row_index, normalized_field])
+            )
+            for row_index in affected_indices
+        }
+        updated = current.copy()
+        updated.loc[affected_indices, normalized_field] = normalized_value
+
+        previous_callback = self.progress_callback
+        self.progress_callback = None
+        try:
+            result = self.validate_dataframe(updated)
+        except Exception:
+            self.pipeline = previous_pipeline
+            self.response = previous_response
+            self.execution_time = previous_execution_time
+            raise
+        finally:
+            self.progress_callback = previous_callback
+
+        affected_rows = {index + 1 for index in affected_indices}
+        invalid_issues = [
+            issue
+            for issue in result.affected_rows
+            if issue.row_number in affected_rows
+            and issue.field_name == normalized_field
+        ]
+        if invalid_issues:
+            self.pipeline = previous_pipeline
+            self.response = previous_response
+            self.execution_time = previous_execution_time
+            raise BusinessRuleException(
+                f"'{normalized_value}' is not valid for {normalized_field}"
+            )
+
+        self.pipeline.audit_log = previous_audit
+        for row_index in affected_indices:
+            self.pipeline._record_audit(
+                rule_id="bulk_fill_blank",
+                row_number=row_index + 1,
+                field=normalized_field,
+                old_value=old_values[row_index],
+                new_value=normalized_value,
+                changed_by="user",
+                auto=False,
+            )
+
+        return len(affected_indices), result
 
     def get_audit_log(self) -> list[dict]:
         """Get the audit log."""

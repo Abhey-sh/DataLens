@@ -6,24 +6,7 @@ from __future__ import annotations
 
 import pandas as pd
 from loguru import logger
-import phonenumbers
-import pycountry
-from datetime import datetime
 import unicodedata
-
-from app.core.exceptions import (
-    ValidationIssue,
-    ValidationSeverity,
-    FileValidationException,
-)
-from app.validation.base import FileValidator, RowValidator, FieldValidator
-from app.validation.members.field_cleaning import (
-    CleanResult,
-    clean_date,
-    clean_email,
-    clean_gender,
-    clean_lead_status,
-)
 
 from app.core.exceptions import ValidationIssue, ValidationSeverity
 from app.validation.base import FieldValidator, FileValidator, RowValidator
@@ -86,6 +69,11 @@ def _issue_from_clean(
 ) -> ValidationIssue | None:
     if result.status == "ok":
         return None
+    issue_type = (
+        "blank"
+        if result.current is None and result.status == "suggest"
+        else "validation"
+    )
     if result.status == "suggest":
         return ValidationIssue(
             row_number=row_idx + 1,
@@ -97,6 +85,7 @@ def _issue_from_clean(
             severity=severity_suggest,
             message=result.message,
             auto_fix_available=True,
+            issue_type=issue_type,
         )
     return ValidationIssue(
         row_number=row_idx + 1,
@@ -108,6 +97,7 @@ def _issue_from_clean(
         severity=severity_change,
         message=result.message,
         auto_fix_available=False,
+        issue_type=issue_type,
     )
 
 
@@ -269,73 +259,6 @@ class FirstNameValidator(FieldValidator):
             return []
         issues = []
         for row_idx, value in df["firstName"].items():
-def _issue_from_clean(
-    *,
-    row_idx: int,
-    rule_id: str,
-    rule_name: str,
-    field_name: str,
-    result: CleanResult,
-    severity_suggest=ValidationSeverity.INFO,
-    severity_change=ValidationSeverity.ERROR,
-) -> ValidationIssue | None:
-    if result.status == "ok":
-        return None
-    issue_type = (
-        "blank"
-        if result.current is None and result.status == "suggest"
-        else "validation"
-    )
-    if result.status == "suggest":
-        return ValidationIssue(
-            row_number=row_idx + 1,
-            rule_id=rule_id,
-            rule_name=rule_name,
-            field_name=field_name,
-            current_value=result.current,
-            suggested_value=result.suggested,
-            severity=severity_suggest,
-            message=result.message,
-            auto_fix_available=True,
-            issue_type=issue_type,
-        )
-    return ValidationIssue(
-        row_number=row_idx + 1,
-        rule_id=rule_id,
-        rule_name=rule_name,
-        field_name=field_name,
-        current_value=result.current,
-        suggested_value=None,
-        severity=severity_change,
-        message=result.message,
-        auto_fix_available=False,
-        issue_type=issue_type,
-    )
-
-
-class EmailValidator(FieldValidator):
-    """Clean and validate email format.
-
-    Strip junk/spaces/extra @; still invalid → Change need (manual edit).
-    Cleanable values get a suggested fix that can be auto-applied.
-    """
-
-    def __init__(self):
-        super().__init__(
-            rule_id="email_format",
-            rule_name="Email Format",
-            category="Format Validation",
-            field_name="email",
-            severity=ValidationSeverity.ERROR,
-            description="Strip junk/spaces/extra @; still invalid → Change need",
-            auto_fix_available=True,
-        )
-
-    def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
-        if "email" not in df.columns:
-            return []
-        issues = []
-        for row_idx, value in df["email"].items():
             issue = _issue_from_clean(
                 row_idx=row_idx,
                 rule_id=self.rule_id,
@@ -377,10 +300,6 @@ class LastNameValidator(FieldValidator):
                 rule_name=self.rule_name,
                 field_name="lastName",
                 result=clean_name(value),
-                field_name="gender",
-                result=clean_gender(value),
-                severity_suggest=ValidationSeverity.INFO,
-                severity_change=ValidationSeverity.ERROR,
             )
             if issue:
                 issues.append(issue)
@@ -388,12 +307,6 @@ class LastNameValidator(FieldValidator):
 
     def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
         return _apply_suggested(df, row_idx, "lastName", clean_name)
-        if "gender" not in df.columns:
-            return df
-        result = clean_gender(df.at[row_idx, "gender"])
-        if result.status == "suggest" and result.suggested is not None:
-            df.at[row_idx, "gender"] = result.suggested
-        return df
 
 
 class PhoneValidator(FieldValidator):
@@ -451,6 +364,23 @@ class EmergencyContactValidator(FieldValidator):
             return []
         issues = []
         for row_idx, value in df["emergencyContact"].items():
+            issue = _issue_from_clean(
+                row_idx=row_idx,
+                rule_id=self.rule_id,
+                rule_name=self.rule_name,
+                field_name="emergencyContact",
+                result=clean_phone(value),
+            )
+            if issue:
+                issues.append(issue)
+        return issues
+
+    def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
+        return _apply_suggested(
+            df, row_idx, "emergencyContact", clean_phone
+        )
+
+
 class LeadStatusValidator(FieldValidator):
     """Normalize lead status to MEMBER, LEAD, COLD, or TRIALS."""
 
@@ -477,8 +407,6 @@ class LeadStatusValidator(FieldValidator):
                 row_idx=row_idx,
                 rule_id=self.rule_id,
                 rule_name=self.rule_name,
-                field_name="emergencyContact",
-                result=clean_phone(value),
                 field_name="leadStatus",
                 result=clean_lead_status(value),
                 severity_suggest=ValidationSeverity.INFO,
@@ -531,13 +459,7 @@ class JoinedDateValidator(FieldValidator):
         return issues
 
     def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
-        return _apply_suggested(df, row_idx, "emergencyContact", clean_phone)
-        if "joinedDate" not in df.columns:
-            return df
-        result = clean_date(df.at[row_idx, "joinedDate"])
-        if result.status == "suggest" and result.suggested is not None:
-            df.at[row_idx, "joinedDate"] = result.suggested
-        return df
+        return _apply_suggested(df, row_idx, "joinedDate", clean_date)
 
 
 class GenderValidator(FieldValidator):
@@ -575,19 +497,6 @@ class GenderValidator(FieldValidator):
         return _apply_suggested(df, row_idx, "gender", clean_gender)
 
 
-class JoinedDateValidator(FieldValidator):
-    """Normalize joined dates; blank → '-'."""
-
-    def __init__(self):
-        super().__init__(
-            rule_id="joined_date_validation",
-            rule_name="Joined Date",
-            category="Format Validation",
-            field_name="joinedDate",
-            severity=ValidationSeverity.WARNING,
-            description="Normalize joinedDate to yyyy-mm-dd; blank → '-'",
-            auto_fix_available=True,
-            default_value="-",
 def _clean_name(value: object) -> str:
     """Return a conservative, letters-and-spaces-only name candidate."""
     if pd.isna(value):
@@ -641,59 +550,6 @@ class _NameDefaultValidator(RowValidator):
         self.field_name = field_name
 
     def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
-        if "joinedDate" not in df.columns:
-            return []
-        issues = []
-        for row_idx, value in df["joinedDate"].items():
-            issue = _issue_from_clean(
-                row_idx=row_idx,
-                rule_id=self.rule_id,
-                rule_name=self.rule_name,
-                field_name="joinedDate",
-                result=clean_date(value),
-            )
-            if issue:
-                issues.append(issue)
-        return issues
-
-    def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
-        return _apply_suggested(df, row_idx, "joinedDate", clean_date)
-
-
-class LeadStatusValidator(FieldValidator):
-    """Normalize lead status aliases."""
-
-    def __init__(self):
-        super().__init__(
-            rule_id="lead_status_validation",
-            rule_name="Lead Status",
-            category="Allowed Values",
-            field_name="leadStatus",
-            severity=ValidationSeverity.ERROR,
-            description="Normalize leads/members aliases; invalid values need edit",
-            auto_fix_available=True,
-        )
-
-    def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
-        if "leadStatus" not in df.columns:
-            return []
-        issues = []
-        for row_idx, value in df["leadStatus"].items():
-            issue = _issue_from_clean(
-                row_idx=row_idx,
-                rule_id=self.rule_id,
-                rule_name=self.rule_name,
-                field_name="leadStatus",
-                result=clean_lead_status(value),
-                severity_suggest=ValidationSeverity.INFO,
-                severity_change=ValidationSeverity.ERROR,
-            )
-            if issue:
-                issues.append(issue)
-        return issues
-
-    def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
-        return _apply_suggested(df, row_idx, "leadStatus", clean_lead_status)
         """Find blank or non-alphabetic names and provide deterministic fixes."""
         if self.field_name not in df.columns:
             return []
@@ -813,8 +669,3 @@ class PostalCodeDefaultValidator(FieldValidator):
 
     def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
         return _apply_suggested(df, row_idx, "postalCode", clean_postal_code)
-
-
-# Backwards-compatible aliases used by older imports/tests
-FirstNameDefaultValidator = FirstNameValidator
-LastNameDefaultValidator = LastNameValidator

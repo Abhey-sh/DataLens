@@ -19,8 +19,26 @@ LEAD_ALIASES = {
     "leads": "LEAD",
     "member": "MEMBER",
     "members": "MEMBER",
+    "cold": "COLD",
+    "trial": "TRIALS",
+    "trials": "TRIALS",
 }
 ALLOWED_GENDERS = {"M", "F", "P"}
+GENDER_ALIASES = {
+    "m": "M",
+    "male": "M",
+    "man": "M",
+    "f": "F",
+    "female": "F",
+    "woman": "F",
+    "w": "F",
+    "p": "P",
+    "prefernottosay": "P",
+    "unknown": "P",
+    "other": "P",
+    "nonbinary": "P",
+    "nb": "P",
+}
 ALLOWED_LEAD_STATUSES = {"MEMBER", "LEAD", "COLD", "TRIALS"}
 
 
@@ -183,8 +201,11 @@ def clean_date(value, *, blank_default: str = "-") -> CleanResult:
     if current == blank_default:
         return CleanResult(status="ok", current=current)
 
+    compacted = re.sub(r"\s+", " ", current.strip())
+    compacted = re.sub(r"\s*([-/])\s*", r"\1", compacted)
+
     try:
-        parsed = date_parser.parse(str(current), dayfirst=False, fuzzy=False)
+        parsed = date_parser.parse(compacted, dayfirst=False, fuzzy=False)
         normalized = parsed.strftime("%Y-%m-%d")
     except (ValueError, TypeError, OverflowError):
         return CleanResult(
@@ -215,7 +236,27 @@ def clean_gender(value) -> CleanResult:
         )
 
     letters_only = re.sub(r"[^A-Za-z]", "", current)
-    if letters_only != current.strip() or not letters_only:
+    if not letters_only:
+        return CleanResult(
+            status="change_need",
+            suggested=None,
+            current=current,
+            message="Gender contains no usable letters. Must be M, F, or P",
+        )
+
+    key = letters_only.lower()
+    if key in GENDER_ALIASES:
+        suggested = GENDER_ALIASES[key]
+        if suggested != current:
+            return CleanResult(
+                status="suggest",
+                suggested=suggested,
+                current=current,
+                message=f"Gender will be set to '{suggested}'",
+            )
+        return CleanResult(status="ok", current=current)
+
+    if letters_only != current.strip():
         return CleanResult(
             status="change_need",
             suggested=None,
@@ -287,6 +328,18 @@ def clean_lead_status(value) -> CleanResult:
     key = current.strip().lower()
     if key in LEAD_ALIASES:
         suggested = LEAD_ALIASES[key]
+        if suggested != current:
+            return CleanResult(
+                status="suggest",
+                suggested=suggested,
+                current=current,
+                message=f"Lead status will be set to {suggested}",
+            )
+        return CleanResult(status="ok", current=current)
+
+    compact = re.sub(r"[^A-Za-z]", "", current).lower()
+    if compact in LEAD_ALIASES:
+        suggested = LEAD_ALIASES[compact]
         if suggested != current:
             return CleanResult(
                 status="suggest",

@@ -32,6 +32,11 @@ def _issue_from_clean(
 ) -> ValidationIssue | None:
     if result.status == "ok":
         return None
+    issue_type = (
+        "blank"
+        if result.current is None and result.status == "suggest"
+        else "validation"
+    )
     if result.status == "suggest":
         return ValidationIssue(
             row_number=row_idx + 1,
@@ -43,6 +48,7 @@ def _issue_from_clean(
             severity=severity_suggest,
             message=result.message,
             auto_fix_available=True,
+            issue_type=issue_type,
         )
     return ValidationIssue(
         row_number=row_idx + 1,
@@ -54,6 +60,7 @@ def _issue_from_clean(
         severity=severity_change,
         message=result.message,
         auto_fix_available=False,
+        issue_type=issue_type,
     )
 
 
