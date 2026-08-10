@@ -165,6 +165,14 @@ class OperationResponse(ApiSchema):
     result: ValidationResponse | None = None
 
 
+class BulkFillResponse(ApiSchema):
+    status: str
+    message: str
+    field_name: str
+    updated_rows: int = Field(ge=1)
+    result: ValidationResponse
+
+
 class AddMissingColumnsResponse(ApiSchema):
     status: str
     message: str
