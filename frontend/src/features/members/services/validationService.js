@@ -1,5 +1,8 @@
 export {
   addMissingMandatoryColumns,
+  applyIssueAutoFix,
+  applyManualEdit,
+  applyRuleAutoFix,
   bulkFillBlankValues,
   downloadAudit,
   downloadCorrected,
@@ -7,5 +10,6 @@ export {
   getApiErrorMessage,
   getMembersValidationProgress,
   getValidationResult,
+  saveValidationResult,
   startMembersValidation,
 } from "../../../services/validationApi";

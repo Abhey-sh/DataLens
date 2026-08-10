@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 from typing import Optional
 from loguru import logger
-from email_validator import validate_email, EmailNotValidError
 import phonenumbers
 import pycountry
 from datetime import datetime
@@ -18,6 +17,13 @@ from app.core.exceptions import (
     FileValidationException,
 )
 from app.validation.base import FileValidator, RowValidator, FieldValidator
+from app.validation.members.field_cleaning import (
+    CleanResult,
+    clean_date,
+    clean_email,
+    clean_gender,
+    clean_lead_status,
+)
 
 
 # Mandatory headers through joinedDate (file review)
@@ -200,63 +206,98 @@ class RequiredFieldValidator(RowValidator):
         return df
 
 
+def _issue_from_clean(
+    *,
+    row_idx: int,
+    rule_id: str,
+    rule_name: str,
+    field_name: str,
+    result: CleanResult,
+    severity_suggest=ValidationSeverity.INFO,
+    severity_change=ValidationSeverity.ERROR,
+) -> ValidationIssue | None:
+    if result.status == "ok":
+        return None
+    issue_type = (
+        "blank"
+        if result.current is None and result.status == "suggest"
+        else "validation"
+    )
+    if result.status == "suggest":
+        return ValidationIssue(
+            row_number=row_idx + 1,
+            rule_id=rule_id,
+            rule_name=rule_name,
+            field_name=field_name,
+            current_value=result.current,
+            suggested_value=result.suggested,
+            severity=severity_suggest,
+            message=result.message,
+            auto_fix_available=True,
+            issue_type=issue_type,
+        )
+    return ValidationIssue(
+        row_number=row_idx + 1,
+        rule_id=rule_id,
+        rule_name=rule_name,
+        field_name=field_name,
+        current_value=result.current,
+        suggested_value=None,
+        severity=severity_change,
+        message=result.message,
+        auto_fix_available=False,
+        issue_type=issue_type,
+    )
+
+
 class EmailValidator(FieldValidator):
-    """Validate email format."""
+    """Clean and validate email format.
+
+    Strip junk/spaces/extra @; still invalid → Change need (manual edit).
+    Cleanable values get a suggested fix that can be auto-applied.
+    """
 
     def __init__(self):
         super().__init__(
             rule_id="email_format",
-            rule_name="Email Format Validation",
+            rule_name="Email Format",
             category="Format Validation",
             field_name="email",
             severity=ValidationSeverity.ERROR,
-            description="Email must be a valid email address",
-            auto_fix_available=False,
-            default_value="Manual Review Required",
+            description="Strip junk/spaces/extra @; still invalid → Change need",
+            auto_fix_available=True,
         )
 
     def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
-        """Validate email format for all rows."""
-        issues = []
-        
         if "email" not in df.columns:
-            return issues
-        
-        for row_idx, email_val in df["email"].items():
-            if pd.isna(email_val) or email_val == "":
-                continue  # Required field validator handles this
-            
-            try:
-                # Normalize email
-                validate_email(
-                    str(email_val).strip(),
-                    check_deliverability=False,
-                )
-            except EmailNotValidError as e:
-                issues.append(
-                    ValidationIssue(
-                        row_number=row_idx + 1,
-                        rule_id=self.rule_id,
-                        rule_name=self.rule_name,
-                        field_name="email",
-                        current_value=str(email_val),
-                        suggested_value=self.default_value,
-                        severity=self.severity,
-                        message=f"Invalid email format: {str(e)}",
-                        auto_fix_available=False,
-                    )
-                )
-        
+            return []
+        issues = []
+        for row_idx, value in df["email"].items():
+            issue = _issue_from_clean(
+                row_idx=row_idx,
+                rule_id=self.rule_id,
+                rule_name=self.rule_name,
+                field_name="email",
+                result=clean_email(value),
+                severity_suggest=ValidationSeverity.INFO,
+                severity_change=ValidationSeverity.ERROR,
+            )
+            if issue:
+                issues.append(issue)
         logger.info(f"Email validation: {len(issues)} issues found")
         return issues
 
     def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
-        """Cannot auto-fix invalid emails."""
+        if "email" not in df.columns:
+            return df
+        result = clean_email(df.at[row_idx, "email"])
+        if result.status == "suggest" and result.suggested is not None:
+            df.at[row_idx, "email"] = result.suggested
         return df
 
 
 class GenderValidator(FieldValidator):
-    """Validate and apply defaults for gender field."""
+    """Normalize gender to M, F, or P. Blank → P."""
 
     def __init__(self):
         super().__init__(
@@ -265,55 +306,35 @@ class GenderValidator(FieldValidator):
             category="Allowed Values",
             field_name="gender",
             severity=ValidationSeverity.WARNING,
-            description="Gender must be M, F, or P. Blank values default to P.",
+            description="Gender must be M, F, or P. Blank → P; male/female aliases normalized.",
             auto_fix_available=True,
             default_value="P",
         )
 
     def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
-        """Validate gender values."""
-        issues = []
-        
         if "gender" not in df.columns:
-            return issues
-        
-        for row_idx, gender_val in df["gender"].items():
-            # Blank gender is auto-fixable
-            if pd.isna(gender_val) or gender_val == "":
-                issues.append(
-                    ValidationIssue(
-                        row_number=row_idx + 1,
-                        rule_id=self.rule_id,
-                        rule_name=self.rule_name,
-                        field_name="gender",
-                        current_value=None,
-                        suggested_value="P",
-                        severity=ValidationSeverity.INFO,
-                        message="Blank gender will be set to 'P'",
-                        auto_fix_available=True,
-                    )
-                )
-            elif str(gender_val).upper() not in ALLOWED_GENDERS:
-                issues.append(
-                    ValidationIssue(
-                        row_number=row_idx + 1,
-                        rule_id=self.rule_id,
-                        rule_name=self.rule_name,
-                        field_name="gender",
-                        current_value=str(gender_val),
-                        suggested_value=None,
-                        severity=ValidationSeverity.ERROR,
-                        message=f"Invalid gender value: {gender_val}. Must be M, F, or P",
-                        auto_fix_available=False,
-                    )
-                )
-        
+            return []
+        issues = []
+        for row_idx, value in df["gender"].items():
+            issue = _issue_from_clean(
+                row_idx=row_idx,
+                rule_id=self.rule_id,
+                rule_name=self.rule_name,
+                field_name="gender",
+                result=clean_gender(value),
+                severity_suggest=ValidationSeverity.INFO,
+                severity_change=ValidationSeverity.ERROR,
+            )
+            if issue:
+                issues.append(issue)
         return issues
 
     def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
-        """Apply gender default."""
-        if "gender" in df.columns:
-            df.at[row_idx, "gender"] = "P"
+        if "gender" not in df.columns:
+            return df
+        result = clean_gender(df.at[row_idx, "gender"])
+        if result.status == "suggest" and result.suggested is not None:
+            df.at[row_idx, "gender"] = result.suggested
         return df
 
 
@@ -385,7 +406,7 @@ class BirthDateValidator(FieldValidator):
 
 
 class LeadStatusValidator(FieldValidator):
-    """Validate lead status values."""
+    """Normalize lead status to MEMBER, LEAD, COLD, or TRIALS."""
 
     def __init__(self):
         super().__init__(
@@ -394,41 +415,79 @@ class LeadStatusValidator(FieldValidator):
             category="Allowed Values",
             field_name="leadStatus",
             severity=ValidationSeverity.ERROR,
-            description="Lead status must be MEMBER, LEAD, COLD, or TRIALS",
-            auto_fix_available=False,
-            default_value="Manual Review Required",
+            description=(
+                "Lead status must be MEMBER, LEAD, COLD, or TRIALS. "
+                "Aliases like leads/members are normalized."
+            ),
+            auto_fix_available=True,
         )
 
     def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
-        """Validate lead status values."""
-        issues = []
-        
         if "leadStatus" not in df.columns:
-            return issues
-        
-        for row_idx, status_val in df["leadStatus"].items():
-            if pd.isna(status_val) or status_val == "":
-                continue  # Required field validator handles this
-            
-            if str(status_val).upper() not in ALLOWED_LEAD_STATUSES:
-                issues.append(
-                    ValidationIssue(
-                        row_number=row_idx + 1,
-                        rule_id=self.rule_id,
-                        rule_name=self.rule_name,
-                        field_name="leadStatus",
-                        current_value=str(status_val),
-                        suggested_value=self.default_value,
-                        severity=self.severity,
-                        message=f"Invalid lead status: {status_val}. Must be MEMBER, LEAD, COLD, or TRIALS",
-                        auto_fix_available=False,
-                    )
-                )
-        
+            return []
+        issues = []
+        for row_idx, value in df["leadStatus"].items():
+            issue = _issue_from_clean(
+                row_idx=row_idx,
+                rule_id=self.rule_id,
+                rule_name=self.rule_name,
+                field_name="leadStatus",
+                result=clean_lead_status(value),
+                severity_suggest=ValidationSeverity.INFO,
+                severity_change=ValidationSeverity.ERROR,
+            )
+            if issue:
+                issues.append(issue)
         return issues
 
     def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
-        """Cannot auto-fix invalid lead status."""
+        if "leadStatus" not in df.columns:
+            return df
+        result = clean_lead_status(df.at[row_idx, "leadStatus"])
+        if result.status == "suggest" and result.suggested is not None:
+            df.at[row_idx, "leadStatus"] = result.suggested
+        return df
+
+
+class JoinedDateValidator(FieldValidator):
+    """Normalize joinedDate to yyyy-mm-dd. Blank → '-'."""
+
+    def __init__(self):
+        super().__init__(
+            rule_id="joined_date_validation",
+            rule_name="Joined Date Validation",
+            category="Allowed Values",
+            field_name="joinedDate",
+            severity=ValidationSeverity.WARNING,
+            description="Normalize joinedDate to yyyy-mm-dd; blank → '-'",
+            auto_fix_available=True,
+            default_value="-",
+        )
+
+    def validate(self, df: pd.DataFrame) -> list[ValidationIssue]:
+        if "joinedDate" not in df.columns:
+            return []
+        issues = []
+        for row_idx, value in df["joinedDate"].items():
+            issue = _issue_from_clean(
+                row_idx=row_idx,
+                rule_id=self.rule_id,
+                rule_name=self.rule_name,
+                field_name="joinedDate",
+                result=clean_date(value),
+                severity_suggest=ValidationSeverity.INFO,
+                severity_change=ValidationSeverity.ERROR,
+            )
+            if issue:
+                issues.append(issue)
+        return issues
+
+    def apply_fix(self, df: pd.DataFrame, row_idx: int) -> pd.DataFrame:
+        if "joinedDate" not in df.columns:
+            return df
+        result = clean_date(df.at[row_idx, "joinedDate"])
+        if result.status == "suggest" and result.suggested is not None:
+            df.at[row_idx, "joinedDate"] = result.suggested
         return df
 
 

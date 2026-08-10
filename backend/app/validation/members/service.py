@@ -33,6 +33,7 @@ from app.validation.members.validators import (
     GenderValidator,
     BirthDateValidator,
     LeadStatusValidator,
+    JoinedDateValidator,
     CountryCodeValidator,
     FirstNameDefaultValidator,
     LastNameDefaultValidator,
@@ -182,6 +183,7 @@ class MembersValidationService:
         self.pipeline.register_field_validator(GenderValidator())
         self.pipeline.register_field_validator(BirthDateValidator())
         self.pipeline.register_field_validator(LeadStatusValidator())
+        self.pipeline.register_field_validator(JoinedDateValidator())
         self.pipeline.register_field_validator(CountryCodeValidator())
 
         logger.info("All validators registered")
@@ -232,13 +234,49 @@ class MembersValidationService:
                 )
 
         # Calculate summary metrics
-        affected_row_numbers = {issue.row_number for issue in issues if issue.row_number > 0}
+        affected_row_numbers = {
+            issue.row_number for issue in issues if issue.row_number > 0
+        }
         rows_with_issues = len(affected_row_numbers)
-        critical_errors = len([i for i in issues if i.severity.value == "error"])
-        warnings = len([i for i in issues if i.severity.value == "warning"])
+
+        def _is_blank_issue(issue) -> bool:
+            if issue.row_number <= 0:
+                return False
+            if issue.issue_type == "blank":
+                return True
+            current = issue.current_value
+            return current is None or str(current).strip() == ""
+
+        # Blank Values → Warnings.
+        # All Email Format issues → Critical Errors (suggest + change-need).
+        # Other severity=error issues also stay in Critical Errors.
+        blank_warnings = sum(1 for issue in issues if _is_blank_issue(issue))
+        other_warnings = sum(
+            1
+            for issue in issues
+            if issue.row_number > 0
+            and not _is_blank_issue(issue)
+            and issue.rule_id != "email_format"
+            and issue.severity.value == "warning"
+        )
+        email_critical = sum(
+            1
+            for issue in issues
+            if issue.row_number > 0 and issue.rule_id == "email_format"
+        )
+        other_critical = sum(
+            1
+            for issue in issues
+            if issue.row_number > 0
+            and issue.rule_id != "email_format"
+            and not _is_blank_issue(issue)
+            and issue.severity.value == "error"
+        )
+        warnings = blank_warnings + other_warnings
+        critical_errors = email_critical + other_critical
         auto_fixes = len([i for i in issues if i.auto_fix_available])
         manual_review = len([i for i in issues if not i.auto_fix_available])
-        
+
         # Calculate validation score (0-100)
         if rows_with_issues > 0:
             validation_score = max(0, 100 - (rows_with_issues / total_rows * 100))
@@ -298,23 +336,27 @@ class MembersValidationService:
 
         return response
 
-    def apply_auto_fix(self, rule_id: str):
-        """Apply automatic fix for a rule."""
+    def apply_auto_fix(self, rule_id: str) -> ValidationResponse:
+        """Apply automatic fix for a rule, then re-validate."""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
         self.pipeline.apply_auto_fix(rule_id)
         logger.info(f"Auto-fix applied for rule {rule_id}")
+        return self._revalidate()
 
-    def apply_issue_auto_fix(self, rule_id: str, row_number: int) -> None:
-        """Apply one configured automatic fix."""
+    def apply_issue_auto_fix(
+        self, rule_id: str, row_number: int
+    ) -> ValidationResponse:
+        """Apply one configured automatic fix, then re-validate."""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
         self.pipeline.apply_issue_auto_fix(rule_id, row_number)
+        return self._revalidate()
 
     def apply_manual_edit(
         self, row_number: int, field_name: str, value: str
-    ) -> None:
-        """Apply and audit a user-provided value for one cell."""
+    ) -> ValidationResponse:
+        """Apply and audit a user-provided value for one cell, then re-validate."""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
         if field_name not in self.pipeline.working_df.columns:
@@ -333,6 +375,24 @@ class MembersValidationService:
             changed_by="user",
             auto=False,
         )
+        return self._revalidate()
+
+    def _revalidate(self) -> ValidationResponse:
+        """Re-run validation on the working dataset after a repair/edit."""
+        if not self.pipeline or self.pipeline.working_df is None:
+            raise BusinessRuleException("No active validation dataset available")
+
+        updated = self.pipeline.working_df.copy()
+        audit = list(self.pipeline.audit_log)
+        previous_callback = self.progress_callback
+        self.progress_callback = None
+        try:
+            result = self.validate_dataframe(updated)
+            if self.pipeline:
+                self.pipeline.audit_log = audit + self.pipeline.audit_log
+            return result
+        finally:
+            self.progress_callback = previous_callback
 
     def bulk_fill_blank_cells(
         self, field_name: str, value: str

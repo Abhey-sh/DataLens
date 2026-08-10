@@ -273,12 +273,14 @@ async def apply_auto_fix(
     """Apply the configured automatic fix for one business rule."""
     service = _require_session(validation_session)
     try:
-        service.apply_auto_fix(request.rule_id)
+        result = service.apply_auto_fix(request.rule_id)
     except BusinessRuleException as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _sync_job_result(validation_session, result, service)
     return OperationResponse(
         status="success",
         message=f"Auto-fix applied for {request.rule_id}",
+        result=result,
     )
 
 
@@ -290,10 +292,17 @@ async def apply_issue_auto_fix(
     """Apply one configured automatic fix to one row."""
     service = _require_session(validation_session)
     try:
-        service.apply_issue_auto_fix(request.rule_id, request.row_number)
+        result = service.apply_issue_auto_fix(
+            request.rule_id, request.row_number
+        )
     except BusinessRuleException as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return OperationResponse(status="success", message="Automatic fix applied")
+    _sync_job_result(validation_session, result, service)
+    return OperationResponse(
+        status="success",
+        message="Automatic fix applied",
+        result=result,
+    )
 
 
 @router.post("/members/edit", response_model=OperationResponse)
@@ -304,12 +313,17 @@ async def apply_manual_edit(
     """Apply one user-provided cell edit."""
     service = _require_session(validation_session)
     try:
-        service.apply_manual_edit(
+        result = service.apply_manual_edit(
             request.row_number, request.field_name, request.value
         )
     except BusinessRuleException as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return OperationResponse(status="success", message="Manual edit applied")
+    _sync_job_result(validation_session, result, service)
+    return OperationResponse(
+        status="success",
+        message="Manual edit applied",
+        result=result,
+    )
 
 
 @router.post("/members/bulk-fill", response_model=BulkFillResponse)
@@ -358,6 +372,19 @@ def _require_session(session_id: str | None) -> MembersValidationService:
             detail="No active validation session. Upload a CSV first.",
         )
     return service
+
+
+def _sync_job_result(
+    validation_session: str | None,
+    result: ValidationResponse,
+    service: MembersValidationService,
+) -> None:
+    if validation_session and validation_jobs.service(validation_session):
+        validation_jobs.update_completed_result(
+            validation_session,
+            result,
+            service,
+        )
 
 
 def _download_report(

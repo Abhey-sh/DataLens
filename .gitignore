@@ -33,3 +33,7 @@ coverage.xml
 htmlcov/
 *.sqlite
 *.sqlite3
+
+# Local packaging artifacts
+DataLens-main/
+DataLens-main.zip

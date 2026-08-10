@@ -162,6 +162,7 @@ class BulkFillRequest(ApiSchema):
 class OperationResponse(ApiSchema):
     status: str
     message: str
+    result: ValidationResponse | None = None
 
 
 class BulkFillResponse(ApiSchema):

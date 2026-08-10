@@ -9,7 +9,9 @@ import {
   Filter,
   Layers3,
   LoaderCircle,
+  Pencil,
   Sparkles,
+  Wand2,
   WandSparkles,
   X,
 } from "lucide-react";
@@ -17,10 +19,29 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "../../../components/ui/Button";
 import {
+  applyIssueAutoFix,
+  applyManualEdit,
+  applyRuleAutoFix,
   bulkFillBlankValues,
   getApiErrorMessage,
   getValidationResult,
+  saveValidationResult,
 } from "../services/validationService";
+
+const DETAIL_RULES = {
+  email_format: { fieldName: "email", label: "Email Format" },
+  first_name_default: { fieldName: "firstName", label: "First Name Cleanup" },
+  last_name_default: { fieldName: "lastName", label: "Last Name Cleanup" },
+  gender_validation: { fieldName: "gender", label: "Gender Validation" },
+  lead_status_validation: {
+    fieldName: "leadStatus",
+    label: "Lead Status Validation",
+  },
+  joined_date_validation: {
+    fieldName: "joinedDate",
+    label: "Joined Date Validation",
+  },
+};
 
 const BULK_FILL_PROTECTED_FIELDS = new Set([
   "userForeignId",
@@ -50,6 +71,50 @@ function isBlankIssue(issue) {
   );
 }
 
+function isChangeNeed(issue) {
+  return !issue.autoFixAvailable;
+}
+
+function getDetailRuleMeta(ruleId, fieldName) {
+  const meta = DETAIL_RULES[ruleId];
+  if (!meta || meta.fieldName !== fieldName) return null;
+  return meta;
+}
+
+function severityBar(severity) {
+  if (severity === "Error" || severity === "Critical") return "bg-rose-500";
+  if (severity === "Warning") return "bg-amber-400";
+  return "bg-sky-400";
+}
+
+function ActionButton({
+  children,
+  className = "",
+  variant = "secondary",
+  disabled = false,
+  onClick,
+}) {
+  const styles =
+    variant === "primary"
+      ? "bg-indigo-700 text-white hover:bg-indigo-600 disabled:opacity-50"
+      : variant === "success"
+        ? "bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50"
+        : variant === "ghost"
+          ? "bg-transparent text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+          : "bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700";
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`inline-flex items-center justify-center gap-1 rounded-full px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed ${styles} ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
 export function MembersReviewPage() {
   const navigate = useNavigate();
   const [initialResult] = useState(() => getValidationResult());
@@ -63,12 +128,18 @@ export function MembersReviewPage() {
   const [isApplyingBulk, setIsApplyingBulk] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-
+  const [busyKey, setBusyKey] = useState(null);
+  const [editingKey, setEditingKey] = useState(null);
+  const [editValue, setEditValue] = useState("");
   useEffect(() => {
     if (!result) {
       navigate("/single-upload/members/upload", { replace: true });
     }
   }, [navigate, result]);
+
+  useEffect(() => {
+    setEditingKey(null);
+  }, [selectedRuleKey]);
 
   const baselineIssues = useMemo(
     () => initialResult?.affectedRows ?? [],
@@ -255,9 +326,169 @@ export function MembersReviewPage() {
     );
   }, [blankIssues, currentIssues, issueTab, selectedRuleKey]);
 
-  if (!result) return null;
+  const selectedDetail = useMemo(() => {
+    if (selectedRuleKey === "all") return null;
+    const [ruleId, fieldName, issueType] = selectedRuleKey.split(":");
+    const meta = getDetailRuleMeta(ruleId, fieldName);
+    if (!meta || !issueType) return null;
+    return { ruleId, fieldName, issueType, label: meta.label };
+  }, [selectedRuleKey]);
 
-  const summary = result.summary;
+  const selectedBlankField = useMemo(() => {
+    if (selectedRuleKey === "all") return null;
+    const [ruleId, fieldName, issueType] = selectedRuleKey.split(":");
+    if (issueType !== "blank" || !fieldName) return null;
+    return { ruleId, fieldName };
+  }, [selectedRuleKey]);
+
+  /** Prefer the Blank Values rule currently selected in the navigator. */
+  const orderedBlankCandidates = useMemo(() => {
+    if (!selectedBlankField) return blankCandidates;
+    const preferred = blankCandidates.find(
+      (candidate) => candidate.fieldName === selectedBlankField.fieldName,
+    );
+    if (!preferred) return blankCandidates;
+    return [
+      preferred,
+      ...blankCandidates.filter(
+        (candidate) => candidate.fieldName !== preferred.fieldName,
+      ),
+    ];
+  }, [blankCandidates, selectedBlankField]);
+
+  const detailIssues = useMemo(() => {
+    if (!selectedDetail) return [];
+    return currentIssues.filter(
+      (issue) =>
+        issue.ruleId === selectedDetail.ruleId &&
+        issue.fieldName === selectedDetail.fieldName &&
+        (isBlankIssue(issue) ? "blank" : "issue") ===
+          selectedDetail.issueType,
+    );
+  }, [currentIssues, selectedDetail]);
+
+  const detailAutofixCount = useMemo(
+    () => detailIssues.filter((issue) => issue.autoFixAvailable).length,
+    [detailIssues],
+  );
+
+  /** Detail-table rows respect the Detected Issues All/Blank tabs. */
+  const detailVisibleIssues = useMemo(() => {
+    if (issueTab === "blank") {
+      return detailIssues.filter(isBlankIssue);
+    }
+    return detailIssues;
+  }, [detailIssues, issueTab]);
+
+  function refreshFromResponse(response, successMessage) {
+    if (response?.result) {
+      saveValidationResult(response.result);
+      setResult(response.result);
+    }
+    if (successMessage) setMessage(successMessage);
+  }
+
+  async function handleAcceptDetail(issue) {
+    setBusyKey(`${issue.ruleId}:${issue.rowNumber}:apply`);
+    setError("");
+    setMessage("");
+    try {
+      const response = await applyIssueAutoFix(issue.ruleId, issue.rowNumber);
+      refreshFromResponse(response, "Suggested value applied.");
+    } catch (requestError) {
+      setError(
+        getApiErrorMessage(requestError, "Could not apply suggested value."),
+      );
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleApplyAllDetail() {
+    if (!selectedDetail) return;
+    setBusyKey(`rule:${selectedDetail.ruleId}`);
+    setError("");
+    setMessage("");
+    try {
+      const response = await applyRuleAutoFix(selectedDetail.ruleId);
+      refreshFromResponse(
+        response,
+        `All suggested ${selectedDetail.label.toLowerCase()} values applied.`,
+      );
+    } catch (requestError) {
+      setError(
+        getApiErrorMessage(requestError, "Could not apply suggested values."),
+      );
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  function startDetailEdit(issue) {
+    setEditingKey(`${issue.ruleId}:${issue.rowNumber}:${issue.fieldName}`);
+    setEditValue(issue.suggestedValue ?? issue.currentValue ?? "");
+    setError("");
+  }
+
+  async function saveDetailEdit(issue) {
+    setBusyKey(`${issue.ruleId}:${issue.rowNumber}:edit`);
+    setError("");
+    setMessage("");
+    try {
+      const response = await applyManualEdit(
+        issue.rowNumber,
+        issue.fieldName,
+        editValue,
+      );
+      refreshFromResponse(response, "Value updated.");
+      setEditingKey(null);
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Could not save edit."));
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  // Keep top cards in sync with remaining issues after Accept / Fill / Edit.
+  const summary = useMemo(() => {
+    if (!result?.summary) return null;
+    const base = result.summary;
+    const issues = (result.affectedRows || []).filter(
+      (issue) => issue.rowNumber > 0,
+    );
+    const isBlank = (issue) =>
+      issue.issueType === "blank" ||
+      issue.currentValue == null ||
+      String(issue.currentValue).trim() === "";
+
+    const blankWarnings = issues.filter(isBlank).length;
+    const otherWarnings = issues.filter(
+      (issue) =>
+        !isBlank(issue) &&
+        issue.ruleId !== "email_format" &&
+        issue.severity === "Warning",
+    ).length;
+    const emailCritical = issues.filter(
+      (issue) => issue.ruleId === "email_format",
+    ).length;
+    const otherCritical = issues.filter(
+      (issue) =>
+        issue.ruleId !== "email_format" &&
+        !isBlank(issue) &&
+        (issue.severity === "Error" || issue.severity === "Critical"),
+    ).length;
+    const rowsWithIssues = new Set(issues.map((issue) => issue.rowNumber)).size;
+
+    return {
+      ...base,
+      warnings: blankWarnings + otherWarnings,
+      criticalErrors: emailCritical + otherCritical,
+      valid: Math.max(0, (base.totalRecords || 0) - rowsWithIssues),
+    };
+  }, [result]);
+
+  if (!result || !summary) return null;
+
   const summaryCards = [
     {
       label: "Total Records",
@@ -281,7 +512,7 @@ export function MembersReviewPage() {
     {
       label: "Warnings",
       value: summary.warnings,
-      caption: "Require review",
+      caption: "Blank values & soft issues",
       icon: AlertTriangle,
       style:
         "border-amber-200 bg-amber-50/70 dark:border-amber-900/50 dark:bg-amber-950/20",
@@ -291,7 +522,7 @@ export function MembersReviewPage() {
     {
       label: "Critical Errors",
       value: summary.criticalErrors,
-      caption: `${currentIssues.length.toLocaleString()} unresolved issues`,
+      caption: "Email & blocking errors",
       icon: CircleAlert,
       style:
         "border-rose-200 bg-rose-50/70 dark:border-rose-900/50 dark:bg-rose-950/20",
@@ -301,12 +532,25 @@ export function MembersReviewPage() {
   ];
 
   const openBulkFill = () => {
-    const firstCandidate = blankCandidates[0];
-    setBulkField(firstCandidate?.fieldName ?? "");
-    setBulkValue(firstCandidate?.defaultValue ?? "");
+    const preferred =
+      (selectedBlankField &&
+        orderedBlankCandidates.find(
+          (candidate) =>
+            candidate.fieldName === selectedBlankField.fieldName,
+        )) ||
+      orderedBlankCandidates[0];
+    setBulkField(preferred?.fieldName ?? "");
+    setBulkValue(preferred?.defaultValue ?? "");
     setError("");
     setMessage("");
     setShowBulkFill(true);
+  };
+
+  const handleSelectRule = (ruleKey) => {
+    setSelectedRuleKey(ruleKey);
+    if (ruleKey !== "all" && ruleKey.endsWith(":blank")) {
+      setIssueTab("blank");
+    }
   };
 
   const closeBulkFill = () => {
@@ -401,7 +645,7 @@ export function MembersReviewPage() {
           }
           selectedRuleKey={selectedRuleKey}
           collapsedCategories={collapsedCategories}
-          onSelectRule={setSelectedRuleKey}
+          onSelectRule={handleSelectRule}
           onToggleCategory={(category) =>
             setCollapsedCategories((current) => {
               const next = new Set(current);
@@ -423,8 +667,17 @@ export function MembersReviewPage() {
                   </h2>
                 </div>
                 <p className="mt-1 text-sm text-slate-500">
-                  {visibleIssues.length.toLocaleString()} issue
-                  {visibleIssues.length === 1 ? "" : "s"} shown
+                  {(selectedDetail
+                    ? detailVisibleIssues.length
+                    : visibleIssues.length
+                  ).toLocaleString()}{" "}
+                  issue
+                  {(selectedDetail
+                    ? detailVisibleIssues.length
+                    : visibleIssues.length) === 1
+                    ? ""
+                    : "s"}{" "}
+                  shown
                   {selectedRuleKey === "all" ? "" : " for the selected rule"}.
                 </p>
               </div>
@@ -437,14 +690,27 @@ export function MembersReviewPage() {
                     Clear rule filter
                   </Button>
                 ) : null}
-                <Button
-                  className="gap-2 bg-indigo-700 hover:bg-indigo-600 dark:bg-indigo-600 dark:text-white"
-                  disabled={!blankCandidates.length}
-                  onClick={openBulkFill}
-                >
-                  <WandSparkles size={16} />
-                  Fill Missing Values
-                </Button>
+                {selectedDetail && detailAutofixCount > 0 ? (
+                  <Button
+                    variant="secondary"
+                    className="gap-2"
+                    disabled={busyKey === `rule:${selectedDetail.ruleId}`}
+                    onClick={handleApplyAllDetail}
+                  >
+                    <Wand2 size={16} />
+                    Apply all suggested
+                  </Button>
+                ) : null}
+                {issueTab === "blank" || selectedBlankField ? (
+                  <Button
+                    className="gap-2 bg-indigo-700 hover:bg-indigo-600 dark:bg-indigo-600 dark:text-white"
+                    disabled={!blankCandidates.length}
+                    onClick={openBulkFill}
+                  >
+                    <WandSparkles size={16} />
+                    Fill Missing Values
+                  </Button>
+                ) : null}
               </div>
             </div>
 
@@ -471,64 +737,241 @@ export function MembersReviewPage() {
               ))}
             </div>
 
-            <div className="max-h-[620px] divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800">
-              {visibleIssues.map((issue) => (
-                <div
-                  key={`${issue.ruleId}-${issue.fieldName}-${issue.rowNumber}`}
-                  className="grid gap-3 p-4 text-sm transition hover:bg-slate-50 sm:grid-cols-[5rem_1fr_1fr_auto] sm:items-center dark:hover:bg-slate-800/50"
-                >
-                  <span className="font-medium text-slate-500">
-                    {issue.rowNumber > 0 ? `Row ${issue.rowNumber}` : "File"}
-                  </span>
-                  <div className="min-w-0">
-                    <p className="truncate font-medium text-slate-900 dark:text-slate-100">
-                      {issue.memberId || issue.ruleName}
+            {selectedDetail &&
+            detailIssues.length > 0 &&
+            detailAutofixCount === 0 ? (
+              <div className="mx-4 mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                Auto Apply: Disabled — No automatic correction exists. Manual
+                review required for {selectedDetail.label} rules.
+              </div>
+            ) : null}
+
+            {selectedDetail ? (
+              <div className="w-full overflow-hidden">
+                <table className="w-full table-fixed text-left text-sm">
+                  <colgroup>
+                    <col className="w-[12%]" />
+                    <col className="w-[16%]" />
+                    <col className="w-[26%]" />
+                    <col className="w-[26%]" />
+                    <col className="w-[20%]" />
+                  </colgroup>
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-950/50 dark:text-slate-400">
+                    <tr>
+                      <th className="px-3 py-3 font-semibold">Row</th>
+                      <th className="px-3 py-3 font-semibold">
+                        Affected Field
+                      </th>
+                      <th className="px-3 py-3 font-semibold">
+                        Current Value
+                      </th>
+                      <th className="px-3 py-3 font-semibold">
+                        Suggested Value
+                      </th>
+                      <th className="px-3 py-3 font-semibold">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {detailVisibleIssues.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="px-4 py-10 text-center text-slate-500"
+                        >
+                          No issues for this rule in the current view.
+                        </td>
+                      </tr>
+                    ) : (
+                      detailVisibleIssues.map((issue) => {
+                        const rowKey = `${issue.ruleId}:${issue.rowNumber}:${issue.fieldName}`;
+                        const isEditing = editingKey === rowKey;
+                        const applyBusy =
+                          busyKey ===
+                          `${issue.ruleId}:${issue.rowNumber}:apply`;
+                        const editBusy =
+                          busyKey ===
+                          `${issue.ruleId}:${issue.rowNumber}:edit`;
+                        return (
+                          <tr key={rowKey} className="align-top">
+                            <td className="px-3 py-3">
+                              <div className="font-semibold text-slate-900 dark:text-white">
+                                #{issue.rowNumber}
+                              </div>
+                              <div className="truncate text-xs text-slate-500">
+                                {issue.memberId
+                                  ? `ID: ${issue.memberId}`
+                                  : "ID: —"}
+                              </div>
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="flex items-start gap-2">
+                                <span
+                                  className={`mt-0.5 h-8 w-1 shrink-0 rounded-full ${severityBar(issue.severity)}`}
+                                />
+                                <div className="min-w-0">
+                                  <div className="truncate font-medium text-slate-800 dark:text-slate-100">
+                                    {issue.fieldName}
+                                  </div>
+                                  <div className="truncate text-xs text-slate-500">
+                                    {selectedDetail.label}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="break-all text-sm text-slate-700 dark:text-slate-200">
+                                {issue.currentValue ?? (
+                                  <span className="text-slate-400">
+                                    (blank)
+                                  </span>
+                                )}
+                              </div>
+                              {isChangeNeed(issue) && !isEditing ? (
+                                <div className="mt-1 flex items-center gap-1 text-[11px] text-rose-600 dark:text-rose-400">
+                                  <AlertTriangle size={12} />
+                                  Change need
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-3">
+                              {isEditing ? (
+                                <input
+                                  type="text"
+                                  value={editValue}
+                                  onChange={(e) =>
+                                    setEditValue(e.target.value)
+                                  }
+                                  autoFocus
+                                  className="w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 shadow-sm outline-none ring-2 ring-indigo-100 focus:border-indigo-400 dark:border-indigo-700 dark:bg-slate-950 dark:text-white dark:ring-indigo-950"
+                                />
+                              ) : issue.suggestedValue != null ? (
+                                <div className="break-all text-sm font-medium text-slate-900 dark:text-slate-100">
+                                  {issue.suggestedValue}
+                                </div>
+                              ) : (
+                                <span className="text-sm text-slate-400">
+                                  —
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="flex flex-wrap gap-1.5">
+                                {isEditing ? (
+                                  <>
+                                    <ActionButton
+                                      variant="primary"
+                                      disabled={editBusy}
+                                      onClick={() => saveDetailEdit(issue)}
+                                    >
+                                      Save
+                                    </ActionButton>
+                                    <ActionButton
+                                      variant="ghost"
+                                      onClick={() => setEditingKey(null)}
+                                    >
+                                      Cancel
+                                    </ActionButton>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ActionButton
+                                      className="w-20"
+                                      onClick={() => startDetailEdit(issue)}
+                                    >
+                                      <Pencil size={12} />
+                                      Edit
+                                    </ActionButton>
+                                    {issue.autoFixAvailable ? (
+                                      <ActionButton
+                                        className="w-20"
+                                        variant="success"
+                                        disabled={applyBusy}
+                                        onClick={() =>
+                                          handleAcceptDetail(issue)
+                                        }
+                                      >
+                                        <Wand2 size={12} />
+                                        Accept
+                                      </ActionButton>
+                                    ) : null}
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="max-h-[620px] divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800">
+                {visibleIssues.map((issue) => (
+                  <div
+                    key={`${issue.ruleId}-${issue.fieldName}-${issue.rowNumber}`}
+                    className="grid gap-3 p-4 text-sm transition hover:bg-slate-50 sm:grid-cols-[5rem_1fr_1fr_auto] sm:items-center dark:hover:bg-slate-800/50"
+                  >
+                    <span className="font-medium text-slate-500">
+                      {issue.rowNumber > 0 ? `Row ${issue.rowNumber}` : "File"}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-slate-900 dark:text-slate-100">
+                        {issue.memberId || issue.ruleName}
+                      </p>
+                      <p className="truncate text-xs text-slate-500">
+                        {humanize(issue.fieldName)}
+                        {isBlankIssue(issue) ? (
+                          <span className="ml-2 rounded bg-rose-50 px-1.5 py-0.5 font-semibold text-rose-600 dark:bg-rose-950/50 dark:text-rose-300">
+                            {isBlank(issue.currentValue)
+                              ? "Blank"
+                              : "Becomes blank"}
+                          </span>
+                        ) : null}
+                      </p>
+                    </div>
+                    <p className="min-w-0 truncate text-slate-600 dark:text-slate-300">
+                      {issue.reason}
                     </p>
-                    <p className="truncate text-xs text-slate-500">
-                      {humanize(issue.fieldName)}
-                      {isBlankIssue(issue) ? (
-                        <span className="ml-2 rounded bg-rose-50 px-1.5 py-0.5 font-semibold text-rose-600 dark:bg-rose-950/50 dark:text-rose-300">
-                          {isBlank(issue.currentValue)
-                            ? "Blank"
-                            : "Becomes blank"}
-                        </span>
-                      ) : null}
+                    <span
+                      className={`w-fit rounded-full px-2.5 py-1 text-xs font-semibold ${
+                        issue.severity === "Error"
+                          ? "bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
+                          : issue.severity === "Warning"
+                            ? "bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+                            : "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300"
+                      }`}
+                    >
+                      {issue.severity}
+                    </span>
+                  </div>
+                ))}
+                {!visibleIssues.length ? (
+                  <div className="p-10 text-center">
+                    <CheckCircle2
+                      size={30}
+                      className="mx-auto text-emerald-500"
+                    />
+                    <p className="mt-3 font-medium text-slate-900 dark:text-white">
+                      {issueTab === "blank"
+                        ? "No unresolved blank values in this view"
+                        : "No unresolved issues in this view"}
+                    </p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Choose another rule or continue to the results.
                     </p>
                   </div>
-                  <p className="min-w-0 truncate text-slate-600 dark:text-slate-300">
-                    {issue.reason}
-                  </p>
-                  <span
-                    className={`w-fit rounded-full px-2.5 py-1 text-xs font-semibold ${
-                      issue.severity === "Error"
-                        ? "bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
-                        : issue.severity === "Warning"
-                          ? "bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
-                          : "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300"
-                    }`}
-                  >
-                    {issue.severity}
-                  </span>
-                </div>
-              ))}
-              {!visibleIssues.length ? (
-                <div className="p-10 text-center">
-                  <CheckCircle2
-                    size={30}
-                    className="mx-auto text-emerald-500"
-                  />
-                  <p className="mt-3 font-medium text-slate-900 dark:text-white">
-                    {issueTab === "blank"
-                      ? "No unresolved blank values in this view"
-                      : "No unresolved issues in this view"}
-                  </p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Choose another rule or continue to the results.
-                  </p>
-                </div>
-              ) : null}
-            </div>
+                ) : null}
+              </div>
+            )}
           </section>
+
+          {error && !showBulkFill ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-300">
+              {error}
+            </div>
+          ) : null}
 
           {message ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">
@@ -548,7 +991,7 @@ export function MembersReviewPage() {
 
       {showBulkFill ? (
         <BulkFillDialog
-          candidates={blankCandidates}
+          candidates={orderedBlankCandidates}
           selectedCandidate={selectedCandidate}
           fieldName={bulkField}
           value={bulkValue}
@@ -557,7 +1000,7 @@ export function MembersReviewPage() {
           onFieldChange={(fieldName) => {
             setBulkField(fieldName);
             setBulkValue(
-              blankCandidates.find(
+              orderedBlankCandidates.find(
                 (candidate) => candidate.fieldName === fieldName,
               )?.defaultValue ?? "",
             );

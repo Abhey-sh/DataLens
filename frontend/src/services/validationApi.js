@@ -53,6 +53,47 @@ export async function bulkFillBlankValues(fieldName, value, options = {}) {
   return response.data;
 }
 
+export async function applyIssueAutoFix(ruleId, rowNumber, options = {}) {
+  const response = await api.post(
+    "/members/auto-fix/issue",
+    { ruleId, rowNumber },
+    options,
+  );
+  if (response.data.result) {
+    saveValidationResult(response.data.result);
+  }
+  return response.data;
+}
+
+export async function applyRuleAutoFix(ruleId, options = {}) {
+  const response = await api.post(
+    "/members/auto-fix",
+    { ruleId },
+    options,
+  );
+  if (response.data.result) {
+    saveValidationResult(response.data.result);
+  }
+  return response.data;
+}
+
+export async function applyManualEdit(
+  rowNumber,
+  fieldName,
+  value,
+  options = {},
+) {
+  const response = await api.post(
+    "/members/edit",
+    { rowNumber, fieldName, value },
+    options,
+  );
+  if (response.data.result) {
+    saveValidationResult(response.data.result);
+  }
+  return response.data;
+}
+
 export function saveValidationResult(result) {
   sessionStorage.setItem(resultKey, JSON.stringify(result));
 }
