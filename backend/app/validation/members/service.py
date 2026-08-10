@@ -35,6 +35,12 @@ from app.validation.members.validators import (
     RequiredFieldValidator,
 )
 
+BULK_FILL_PROTECTED_FIELDS = {
+    "userForeignId",
+    "email",
+    "accessBarcode",
+}
+
 
 class MembersValidationService:
     """
@@ -218,13 +224,49 @@ class MembersValidationService:
                 )
 
         # Calculate summary metrics
-        affected_row_numbers = {issue.row_number for issue in issues if issue.row_number > 0}
+        affected_row_numbers = {
+            issue.row_number for issue in issues if issue.row_number > 0
+        }
         rows_with_issues = len(affected_row_numbers)
-        critical_errors = len([i for i in issues if i.severity.value == "error"])
-        warnings = len([i for i in issues if i.severity.value == "warning"])
+
+        def _is_blank_issue(issue) -> bool:
+            if issue.row_number <= 0:
+                return False
+            if issue.issue_type == "blank":
+                return True
+            current = issue.current_value
+            return current is None or str(current).strip() == ""
+
+        # Blank Values → Warnings.
+        # All Email Format issues → Critical Errors (suggest + change-need).
+        # Other severity=error issues also stay in Critical Errors.
+        blank_warnings = sum(1 for issue in issues if _is_blank_issue(issue))
+        other_warnings = sum(
+            1
+            for issue in issues
+            if issue.row_number > 0
+            and not _is_blank_issue(issue)
+            and issue.rule_id != "email_format"
+            and issue.severity.value == "warning"
+        )
+        email_critical = sum(
+            1
+            for issue in issues
+            if issue.row_number > 0 and issue.rule_id == "email_format"
+        )
+        other_critical = sum(
+            1
+            for issue in issues
+            if issue.row_number > 0
+            and issue.rule_id != "email_format"
+            and not _is_blank_issue(issue)
+            and issue.severity.value == "error"
+        )
+        warnings = blank_warnings + other_warnings
+        critical_errors = email_critical + other_critical
         auto_fixes = len([i for i in issues if i.auto_fix_available])
         manual_review = len([i for i in issues if not i.auto_fix_available])
-        
+
         # Calculate validation score (0-100)
         if rows_with_issues > 0:
             validation_score = max(0, 100 - (rows_with_issues / total_rows * 100))

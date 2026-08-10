@@ -26,6 +26,8 @@ from app.core.exceptions import (
 )
 from app.schemas.validation import (
     AddMissingColumnsResponse,
+    BulkFillRequest,
+    BulkFillResponse,
     AutoFixRequest,
     AutoFixIssueRequest,
     FileRowsResponse,

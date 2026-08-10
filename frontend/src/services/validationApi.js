@@ -41,6 +41,18 @@ export async function addMissingMandatoryColumns(options = {}) {
   return response.data;
 }
 
+export async function bulkFillBlankValues(fieldName, value, options = {}) {
+  const response = await api.post(
+    "/members/bulk-fill",
+    { fieldName, value },
+    options,
+  );
+  if (response.data.result) {
+    saveValidationResult(response.data.result);
+  }
+  return response.data;
+}
+
 export async function applyIssueAutoFix(ruleId, rowNumber, options = {}) {
   const response = await api.post(
     "/members/auto-fix/issue",

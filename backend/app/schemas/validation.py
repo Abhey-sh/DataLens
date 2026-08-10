@@ -40,6 +40,7 @@ class ValidationIssue(ApiSchema):
     severity: str
     reason: str
     auto_fix_available: bool = False
+    issue_type: str = "validation"
 
 
 class BusinessRuleResult(ApiSchema):
@@ -64,6 +65,7 @@ class AffectedRow(ApiSchema):
     severity: str
     reason: str
     auto_fix_available: bool = False
+    issue_type: str = "validation"
     row_data: dict[str, str | None] = Field(default_factory=dict)
     status: str = "Pending"
     action: str = "Edit"
@@ -150,6 +152,11 @@ class ManualEditRequest(ApiSchema):
     row_number: int = Field(ge=1)
     field_name: str
     value: str
+
+
+class BulkFillRequest(ApiSchema):
+    field_name: str = Field(min_length=1, max_length=100)
+    value: str = Field(min_length=1, max_length=500)
 
 
 class OperationResponse(ApiSchema):

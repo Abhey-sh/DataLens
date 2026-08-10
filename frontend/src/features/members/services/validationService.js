@@ -4,6 +4,7 @@ export {
   applyManualEdit,
   applyRuleAutoFix,
   clearValidationSession,
+  bulkFillBlankValues,
   downloadAudit,
   downloadCorrected,
   downloadSummary,

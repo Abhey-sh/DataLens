@@ -34,6 +34,7 @@ class ValidationIssue(BaseModel):
     message: str
     auto_fix_available: bool = False
     action: Optional[ValidationAction] = None
+    issue_type: str = "validation"
 
 
 class BusinessRuleResponse(BaseModel):
