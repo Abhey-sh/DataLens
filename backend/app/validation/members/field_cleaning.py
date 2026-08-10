@@ -10,33 +10,18 @@ import pandas as pd
 from dateutil import parser as date_parser
 from email_validator import EmailNotValidError, validate_email
 
+NAME_JUNK = re.compile(r"[^A-Za-z\s\-'.]")
+MULTI_SPACE = re.compile(r"\s+")
+HYPHEN_SPACE = re.compile(r"\s*-\s*")
 EMAIL_ALLOWED = re.compile(r"[^A-Za-z0-9.@_+-]")
-ALLOWED_GENDERS = {"M", "F", "P"}
-GENDER_ALIASES = {
-    "m": "M",
-    "male": "M",
-    "man": "M",
-    "f": "F",
-    "female": "F",
-    "woman": "F",
-    "w": "F",
-    "p": "P",
-    "prefernottosay": "P",
-    "unknown": "P",
-    "other": "P",
-    "nonbinary": "P",
-    "nb": "P",
-}
-ALLOWED_LEAD_STATUSES = {"MEMBER", "LEAD", "COLD", "TRIALS"}
 LEAD_ALIASES = {
     "lead": "LEAD",
     "leads": "LEAD",
     "member": "MEMBER",
     "members": "MEMBER",
-    "cold": "COLD",
-    "trial": "TRIALS",
-    "trials": "TRIALS",
 }
+ALLOWED_GENDERS = {"M", "F", "P"}
+ALLOWED_LEAD_STATUSES = {"MEMBER", "LEAD", "COLD", "TRIALS"}
 
 
 @dataclass
@@ -61,8 +46,97 @@ def _current(value) -> str | None:
     return str(value)
 
 
+def clean_name(value) -> CleanResult:
+    current = _current(value)
+    if current is None:
+        return CleanResult(
+            status="suggest",
+            suggested="-",
+            current=None,
+            message="Blank name will be set to '-'",
+        )
+
+    cleaned = NAME_JUNK.sub("", current)
+    cleaned = HYPHEN_SPACE.sub("-", cleaned)
+    cleaned = MULTI_SPACE.sub(" ", cleaned).strip(" -'.")
+    cleaned = cleaned.strip()
+
+    if not cleaned:
+        return CleanResult(
+            status="suggest",
+            suggested="-",
+            current=current,
+            message="Name contained only junk characters; will be set to '-'",
+        )
+
+    if len(cleaned) > 80 or not re.fullmatch(r"[A-Za-z][A-Za-z\s\-'.]*", cleaned):
+        return CleanResult(
+            status="change_need",
+            suggested=None,
+            current=current,
+            message="Name is still invalid after cleaning (pattern or max 80 chars)",
+        )
+
+    if cleaned != current:
+        return CleanResult(
+            status="suggest",
+            suggested=cleaned,
+            current=current,
+            message="Name will be cleaned",
+        )
+    return CleanResult(status="ok", current=current)
+
+
+def clean_phone(value) -> CleanResult:
+    current = _current(value)
+    if current is None:
+        return CleanResult(
+            status="suggest",
+            suggested="-",
+            current=None,
+            message="Blank phone will be set to '-'",
+        )
+
+    raw = current.strip()
+    has_plus = raw.startswith("+")
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return CleanResult(
+            status="suggest",
+            suggested="-",
+            current=current,
+            message="Phone contained only junk; will be set to '-'",
+        )
+
+    cleaned = f"+{digits}" if has_plus else digits
+    if has_plus and not cleaned.startswith("+"):
+        return CleanResult(
+            status="change_need",
+            suggested=None,
+            current=current,
+            message="Phone has an invalid leading + form",
+        )
+
+    digit_count = len(digits)
+    if digit_count < 7 or digit_count > 15:
+        return CleanResult(
+            status="change_need",
+            suggested=None,
+            current=current,
+            message="Phone must contain 7–15 digits",
+        )
+
+    if cleaned != current:
+        return CleanResult(
+            status="suggest",
+            suggested=cleaned,
+            current=current,
+            message="Phone will be sanitized",
+        )
+    return CleanResult(status="ok", current=current)
+
+
 def clean_email(value) -> CleanResult:
-    """Strip junk/spaces/extra @; still invalid → change_need."""
     current = _current(value)
     if current is None:
         return CleanResult(status="ok")  # required-field validator handles blank
@@ -97,7 +171,6 @@ def clean_email(value) -> CleanResult:
 
 
 def clean_date(value, *, blank_default: str = "-") -> CleanResult:
-    """Normalize dates to yyyy-mm-dd. Blank → blank_default."""
     current = _current(value)
     if current is None:
         return CleanResult(
@@ -110,12 +183,8 @@ def clean_date(value, *, blank_default: str = "-") -> CleanResult:
     if current == blank_default:
         return CleanResult(status="ok", current=current)
 
-    # Collapse odd spacing so values like "01-jan -2005" still parse
-    compacted = re.sub(r"\s+", " ", current.strip())
-    compacted = re.sub(r"\s*([-/])\s*", r"\1", compacted)
-
     try:
-        parsed = date_parser.parse(compacted, dayfirst=False, fuzzy=False)
+        parsed = date_parser.parse(str(current), dayfirst=False, fuzzy=False)
         normalized = parsed.strftime("%Y-%m-%d")
     except (ValueError, TypeError, OverflowError):
         return CleanResult(
@@ -136,7 +205,6 @@ def clean_date(value, *, blank_default: str = "-") -> CleanResult:
 
 
 def clean_gender(value) -> CleanResult:
-    """Normalize gender to M, F, or P. Blank → P."""
     current = _current(value)
     if current is None:
         return CleanResult(
@@ -147,25 +215,13 @@ def clean_gender(value) -> CleanResult:
         )
 
     letters_only = re.sub(r"[^A-Za-z]", "", current)
-    if not letters_only:
+    if letters_only != current.strip() or not letters_only:
         return CleanResult(
             status="change_need",
             suggested=None,
             current=current,
-            message="Gender contains no usable letters. Must be M, F, or P",
+            message="Gender contains non-letters",
         )
-
-    key = letters_only.lower()
-    if key in GENDER_ALIASES:
-        suggested = GENDER_ALIASES[key]
-        if suggested != current:
-            return CleanResult(
-                status="suggest",
-                suggested=suggested,
-                current=current,
-                message=f"Gender will be set to '{suggested}'",
-            )
-        return CleanResult(status="ok", current=current)
 
     upper = letters_only.upper()
     if upper not in ALLOWED_GENDERS:
@@ -181,13 +237,49 @@ def clean_gender(value) -> CleanResult:
             status="suggest",
             suggested=upper,
             current=current,
-            message=f"Gender will be set to '{upper}'",
+            message="Gender will be normalized",
+        )
+    return CleanResult(status="ok", current=current)
+
+
+def clean_country_code(value) -> CleanResult:
+    current = _current(value)
+    if current is None:
+        return CleanResult(status="ok")  # required-field handles blank
+
+    letters = re.sub(r"[^A-Za-z]", "", current)
+    if len(letters) != 2:
+        return CleanResult(
+            status="change_need",
+            suggested=None,
+            current=current,
+            message="Country code must be exactly 2 letters",
+        )
+
+    upper = letters.upper()
+    if upper != current:
+        return CleanResult(
+            status="suggest",
+            suggested=upper,
+            current=current,
+            message="Country code will be uppercased",
+        )
+    return CleanResult(status="ok", current=current)
+
+
+def clean_postal_code(value) -> CleanResult:
+    current = _current(value)
+    if current is None:
+        return CleanResult(
+            status="suggest",
+            suggested="-",
+            current=None,
+            message="Blank postal code will be set to '-'",
         )
     return CleanResult(status="ok", current=current)
 
 
 def clean_lead_status(value) -> CleanResult:
-    """Normalize lead status to MEMBER, LEAD, COLD, or TRIALS."""
     current = _current(value)
     if current is None:
         return CleanResult(status="ok")  # required-field handles blank
@@ -195,18 +287,6 @@ def clean_lead_status(value) -> CleanResult:
     key = current.strip().lower()
     if key in LEAD_ALIASES:
         suggested = LEAD_ALIASES[key]
-        if suggested != current:
-            return CleanResult(
-                status="suggest",
-                suggested=suggested,
-                current=current,
-                message=f"Lead status will be set to {suggested}",
-            )
-        return CleanResult(status="ok", current=current)
-
-    compact = re.sub(r"[^A-Za-z]", "", current).lower()
-    if compact in LEAD_ALIASES:
-        suggested = LEAD_ALIASES[compact]
         if suggested != current:
             return CleanResult(
                 status="suggest",

@@ -3,6 +3,7 @@ export {
   applyIssueAutoFix,
   applyManualEdit,
   applyRuleAutoFix,
+  clearValidationSession,
   bulkFillBlankValues,
   downloadAudit,
   downloadCorrected,

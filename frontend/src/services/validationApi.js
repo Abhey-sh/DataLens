@@ -103,6 +103,11 @@ export function getValidationResult() {
   return stored ? JSON.parse(stored) : null;
 }
 
+export function clearValidationSession() {
+  sessionStorage.removeItem(resultKey);
+  sessionStorage.removeItem("uploadedFile");
+}
+
 async function downloadReport(reportName, format = "csv") {
   const response = await api.get(`/members/report/${reportName}`, {
     params: { format },
