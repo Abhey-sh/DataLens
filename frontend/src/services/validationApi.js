@@ -6,132 +6,168 @@ const api = axios.create({
   timeout: 120000,
 });
 
-const resultKey = "membersValidationResult";
+const DOMAINS = ["members", "assets"];
 
-export async function startMembersValidation(file, options = {}) {
-  const formData = new FormData();
-  formData.append("file", file);
-  const response = await api.post("/members/validate/start", formData, {
-    ...options,
-  });
-  sessionStorage.setItem("uploadedFile", file.name);
-  return response.data;
-}
+/**
+ * Build a client for one import domain. Every domain exposes the same
+ * endpoints under its own `/api/{domain}` prefix and keeps its result in its
+ * own session storage key, so two datasets never overwrite each other.
+ */
+function createValidationApi(domain) {
+  const resultKey = `${domain}ValidationResult`;
+  const fileNameKey = `${domain}UploadedFile`;
 
-export async function getMembersValidationProgress(validationId, options = {}) {
-  const response = await api.get(
-    `/members/validate/${validationId}/progress`,
-    options,
-  );
-  if (response.data.result) {
-    saveValidationResult(response.data.result);
+  function saveValidationResult(result) {
+    sessionStorage.setItem(resultKey, JSON.stringify(result));
   }
-  return response.data;
-}
 
-export async function addMissingMandatoryColumns(options = {}) {
-  const response = await api.post(
-    "/members/file-review/add-missing-columns",
-    null,
-    options,
-  );
-  if (response.data.result) {
-    saveValidationResult(response.data.result);
+  function getValidationResult() {
+    const stored = sessionStorage.getItem(resultKey);
+    return stored ? JSON.parse(stored) : null;
   }
-  return response.data;
-}
 
-export async function bulkFillBlankValues(fieldName, value, options = {}) {
-  const response = await api.post(
-    "/members/bulk-fill",
-    { fieldName, value },
-    options,
-  );
-  if (response.data.result) {
-    saveValidationResult(response.data.result);
+  function clearSession() {
+    sessionStorage.removeItem(resultKey);
+    sessionStorage.removeItem(fileNameKey);
   }
-  return response.data;
-}
 
-export async function applyIssueAutoFix(ruleId, rowNumber, options = {}) {
-  const response = await api.post(
-    "/members/auto-fix/issue",
-    { ruleId, rowNumber },
-    options,
-  );
-  if (response.data.result) {
-    saveValidationResult(response.data.result);
+  function storeResult(response) {
+    if (response.data.result) {
+      saveValidationResult(response.data.result);
+    }
+    return response.data;
   }
-  return response.data;
-}
 
-export async function applyRuleAutoFix(ruleId, options = {}) {
-  const response = await api.post(
-    "/members/auto-fix",
-    { ruleId },
-    options,
-  );
-  if (response.data.result) {
-    saveValidationResult(response.data.result);
+  async function startValidation(file, options = {}) {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await api.post(
+      `/${domain}/validate/start`,
+      formData,
+      options,
+    );
+    sessionStorage.setItem(fileNameKey, file.name);
+    return response.data;
   }
-  return response.data;
-}
 
-export async function applyManualEdit(
-  rowNumber,
-  fieldName,
-  value,
-  options = {},
-) {
-  const response = await api.post(
-    "/members/edit",
-    { rowNumber, fieldName, value },
-    options,
-  );
-  if (response.data.result) {
-    saveValidationResult(response.data.result);
+  async function getValidationProgress(validationId, options = {}) {
+    const response = await api.get(
+      `/${domain}/validate/${validationId}/progress`,
+      options,
+    );
+    return storeResult(response);
   }
-  return response.data;
+
+  async function addMissingMandatoryColumns(options = {}) {
+    const response = await api.post(
+      `/${domain}/file-review/add-missing-columns`,
+      null,
+      options,
+    );
+    return storeResult(response);
+  }
+
+  async function bulkFillBlankValues(fieldName, value, options = {}) {
+    const response = await api.post(
+      `/${domain}/bulk-fill`,
+      { fieldName, value },
+      options,
+    );
+    return storeResult(response);
+  }
+
+  async function applyIssueAutoFix(ruleId, rowNumber, options = {}) {
+    const response = await api.post(
+      `/${domain}/auto-fix/issue`,
+      { ruleId, rowNumber },
+      options,
+    );
+    return storeResult(response);
+  }
+
+  async function applyRuleAutoFix(ruleId, options = {}) {
+    const response = await api.post(
+      `/${domain}/auto-fix`,
+      { ruleId },
+      options,
+    );
+    return storeResult(response);
+  }
+
+  async function applyManualEdit(rowNumber, fieldName, value, options = {}) {
+    const response = await api.post(
+      `/${domain}/edit`,
+      { rowNumber, fieldName, value },
+      options,
+    );
+    return storeResult(response);
+  }
+
+  async function downloadReport(reportName, format = "csv") {
+    const response = await api.get(`/${domain}/report/${reportName}`, {
+      params: { format },
+      responseType: "blob",
+    });
+    const disposition = response.headers["content-disposition"] || "";
+    const filename =
+      disposition.match(/filename="?([^"]+)"?/)?.[1] ||
+      `${domain}_validation_${reportName}.${format}`;
+    const url = URL.createObjectURL(response.data);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  return {
+    addMissingMandatoryColumns,
+    applyIssueAutoFix,
+    applyManualEdit,
+    applyRuleAutoFix,
+    bulkFillBlankValues,
+    clearSession,
+    downloadAudit: (format) => downloadReport("audit", format),
+    downloadCorrected: (format) => downloadReport("corrected", format),
+    downloadErrors: (format) => downloadReport("errors", format),
+    downloadRemoved: (format) => downloadReport("removed", format),
+    downloadSummary: (format) => downloadReport("summary", format),
+    getValidationProgress,
+    getValidationResult,
+    saveValidationResult,
+    startValidation,
+  };
 }
 
-export function saveValidationResult(result) {
-  sessionStorage.setItem(resultKey, JSON.stringify(result));
-}
+const clients = Object.fromEntries(
+  DOMAINS.map((domain) => [domain, createValidationApi(domain)]),
+);
 
-export function getValidationResult() {
-  const stored = sessionStorage.getItem(resultKey);
-  return stored ? JSON.parse(stored) : null;
-}
+export const membersApi = clients.members;
+export const assetsApi = clients.assets;
 
+/** Drop every stored validation result, whatever the import domain. */
 export function clearValidationSession() {
-  sessionStorage.removeItem(resultKey);
-  sessionStorage.removeItem("uploadedFile");
+  Object.values(clients).forEach((client) => client.clearSession());
 }
-
-async function downloadReport(reportName, format = "csv") {
-  const response = await api.get(`/members/report/${reportName}`, {
-    params: { format },
-    responseType: "blob",
-  });
-  const disposition = response.headers["content-disposition"] || "";
-  const filename =
-    disposition.match(/filename="?([^"]+)"?/)?.[1] ||
-    `members_validation_${reportName}.${format}`;
-  const url = URL.createObjectURL(response.data);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-export const downloadSummary = (format) => downloadReport("summary", format);
-export const downloadAudit = (format) => downloadReport("audit", format);
-export const downloadCorrected = (format) =>
-  downloadReport("corrected", format);
 
 export function getApiErrorMessage(error, fallback = "Request failed") {
   return error.response?.data?.detail || error.message || fallback;
 }
+
+export const {
+  addMissingMandatoryColumns,
+  applyIssueAutoFix,
+  applyManualEdit,
+  applyRuleAutoFix,
+  bulkFillBlankValues,
+  downloadAudit,
+  downloadCorrected,
+  downloadSummary,
+  getValidationResult,
+  saveValidationResult,
+} = membersApi;
+export const startMembersValidation = membersApi.startValidation;
+export const getMembersValidationProgress = membersApi.getValidationProgress;

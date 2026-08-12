@@ -1,5 +1,6 @@
 import {
   BadgeCheck,
+  Boxes,
   Building2,
   Landmark,
   MapPin,
@@ -11,6 +12,13 @@ export const workflowSteps = [
   "Import Type",
   "Upload & Validate",
   "Review & Map",
+  "Finalize",
+];
+
+/** Assets skips Review & Map and goes straight to Finalize. */
+export const assetsWorkflowSteps = [
+  "Import Type",
+  "Upload & Validate",
   "Finalize",
 ];
 
@@ -52,6 +60,27 @@ export const importTypes = [
     validationRules: ["Subscription status", "Account linkages"],
     supportedFormats: ["CSV"],
     requiredFiles: ["Membership roster"],
+  },
+  {
+    id: "assets",
+    title: "Assets",
+    description:
+      "Validate asset photo imports: required headers, primary studio filter, resource type, image URLs, and duplicate resource IDs.",
+    icon: Boxes,
+    uploadRoute: "/single-upload/assets/upload",
+    reviewRoute: "/single-upload/assets/results",
+    resultsRoute: "/single-upload/assets/results",
+    status: "active",
+    version: "V1",
+    validationRules: [
+      "Required Headers",
+      "Primary Studio Filter",
+      "Resource Type",
+      "Image URL",
+      "Duplicate Resource ID",
+    ],
+    supportedFormats: ["CSV"],
+    requiredFiles: ["Assets dataset"],
   },
   {
     id: "transactions",

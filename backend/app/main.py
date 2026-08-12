@@ -8,7 +8,7 @@ from loguru import logger
 import os
 import sys
 
-from app.api.routes import members
+from app.api.routes import assets, members
 from app.schemas.validation import HealthResponse
 
 # Configure logging
@@ -41,6 +41,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(members.router)
+app.include_router(assets.router)
 
 
 @app.get("/health", response_model=HealthResponse, include_in_schema=False)

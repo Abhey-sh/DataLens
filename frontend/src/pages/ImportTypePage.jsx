@@ -28,8 +28,8 @@ export function ImportTypePage() {
             Validate Import Data
           </h1>
           <p className="max-w-2xl text-slate-600 dark:text-slate-400">
-            Choose the import family you want to validate. Only Members is
-            available in this release.
+            Choose the import family you want to validate. Members and Assets
+            are available in this release.
           </p>
         </div>
 

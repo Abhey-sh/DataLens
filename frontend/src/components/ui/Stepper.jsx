@@ -2,10 +2,10 @@ import { Check } from "lucide-react";
 import { workflowSteps } from "../../constants/importTypes";
 import { cn } from "../../utils/cn";
 
-export function Stepper({ currentStep }) {
+export function Stepper({ currentStep, steps = workflowSteps }) {
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-full border border-slate-200 bg-slate-50/80 p-2 dark:border-slate-800 dark:bg-slate-900/70">
-      {workflowSteps.map((step, index) => {
+      {steps.map((step, index) => {
         const isActive = index + 1 === currentStep;
         const isComplete = index + 1 < currentStep;
 
