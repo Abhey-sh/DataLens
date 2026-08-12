@@ -3,15 +3,19 @@
 from dataclasses import dataclass, field
 from threading import RLock
 from time import monotonic
+from typing import Callable
 from uuid import uuid4
 
 import pandas as pd
 
 from app.schemas.validation import ValidationProgress, ValidationResponse
+from app.validation.dataset_service import ValidationService
 from app.validation.members.service import MembersValidationService
 
 
 JOB_TTL_SECONDS = 60 * 60
+
+ServiceFactory = Callable[..., ValidationService]
 
 
 @dataclass
@@ -29,17 +33,22 @@ class ValidationJob:
     checks: list[dict] = field(default_factory=list)
     error: str | None = None
     result: ValidationResponse | None = None
-    service: MembersValidationService | None = None
+    service: ValidationService | None = None
     started_at: float = field(default_factory=monotonic)
     completed_at: float | None = None
     last_accessed: float = field(default_factory=monotonic)
 
 
 class ValidationJobStore:
-    """Run validation work and expose truthful progress snapshots."""
+    """Run validation work and expose truthful progress snapshots.
 
-    def __init__(self) -> None:
+    One store serves one dataset domain; ``service_factory`` decides which
+    validation service the background job runs.
+    """
+
+    def __init__(self, service_factory: ServiceFactory) -> None:
         self._jobs: dict[str, ValidationJob] = {}
+        self._service_factory = service_factory
         self._lock = RLock()
 
     def create(self, dataframe: pd.DataFrame) -> ValidationJob:
@@ -81,7 +90,7 @@ class ValidationJobStore:
                 validation_score=round(score, 2),
             )
 
-        service = MembersValidationService(progress_callback=report)
+        service = self._service_factory(progress_callback=report)
         try:
             result = service.validate_dataframe(dataframe)
             self._update(
@@ -149,7 +158,7 @@ class ValidationJobStore:
                 result=job.result,
             )
 
-    def service(self, validation_id: str | None) -> MembersValidationService | None:
+    def service(self, validation_id: str | None) -> ValidationService | None:
         if not validation_id:
             return None
         with self._lock:
@@ -164,7 +173,7 @@ class ValidationJobStore:
         self,
         validation_id: str,
         result: ValidationResponse,
-        service: MembersValidationService,
+        service: ValidationService,
     ) -> None:
         """Replace a completed job's result after a repair pass."""
         issue_counts: dict[str, int] = {}
@@ -233,4 +242,4 @@ class ValidationJobStore:
             del self._jobs[validation_id]
 
 
-validation_jobs = ValidationJobStore()
+validation_jobs = ValidationJobStore(MembersValidationService)

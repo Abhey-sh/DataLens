@@ -1,5 +1,8 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
+import { AssetsProcessingPage } from "./features/assets/pages/AssetsProcessingPage";
+import { AssetsResultsPage } from "./features/assets/pages/AssetsResultsPage";
+import { AssetsUploadPage } from "./features/assets/pages/AssetsUploadPage";
 import { MembersProcessingPage } from "./features/members/pages/MembersProcessingPage";
 import { MembersResultsPage } from "./features/members/pages/MembersResultsPage";
 import { MembersReviewPage } from "./features/members/pages/MembersReviewPage";
@@ -28,6 +31,18 @@ export function AppRoutes() {
         <Route
           path="/single-upload/members/results"
           element={<MembersResultsPage />}
+        />
+        <Route
+          path="/single-upload/assets/upload"
+          element={<AssetsUploadPage />}
+        />
+        <Route
+          path="/single-upload/assets/processing"
+          element={<AssetsProcessingPage />}
+        />
+        <Route
+          path="/single-upload/assets/results"
+          element={<AssetsResultsPage />}
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
