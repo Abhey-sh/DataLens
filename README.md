@@ -1,6 +1,6 @@
 # DataLens
 
-Enterprise CSV validation platform for member imports. Upload a members CSV, monitor the live business-rule pipeline, resolve affected rows in the review workspace, and download summary / error / audit / corrected reports.
+Enterprise CSV validation platform for import datasets. Validate **Members** (review and repair) or **Assets** (auto-clean and finalize), then download summary / audit / corrected reports.
 
 ## Quick start (single command)
 
@@ -57,12 +57,13 @@ DataLens/
 │   │   ├── api/routes/      HTTP routes
 │   │   ├── reports/         CSV / Excel report generation
 │   │   ├── schemas/         Pydantic API models
-│   │   └── validation/      Reusable validation pipeline + members rules
+│   │   └── validation/      Pipeline + members/ and assets/ rule packs
 │   ├── tests/                Backend validation and repair tests
 │   └── requirements.txt
 ├── frontend/                React + Vite UI
 │   └── src/
 │       ├── features/members/
+│       ├── features/assets/
 │       └── services/validationApi.js
 ├── scripts/                 Setup & run helpers
 ├── package.json             Root scripts (npm start)
@@ -108,6 +109,43 @@ DataLens/
 Report endpoints accept `?format=csv` (default) or `?format=xlsx`.
 
 Validation and repair requests use an HTTP-only validation-session cookie. Keep credentials enabled when calling the API from a separate frontend origin.
+
+## Assets workflow
+
+1. **Upload** — choose an assets CSV with columns `resourceForeignId`, `studioForeignId`, `studioId`, `resourceType`, and `assetURL`.
+2. **Validate** — start a background validation job and monitor its checks, timing, progress, and engine output.
+3. **Auto-clean** — invalid **full rows** are removed during validation (no Review & Map step for Assets).
+4. **Finalize** — inspect kept/removed counts and a removed-rows preview.
+5. **Download** — export the summary, errors, audit log, corrected dataset, or removed-rows report as CSV/XLSX.
+
+### Validation and cleanup behavior
+
+- Required headers must be present. Missing headers **block** the file; fix the CSV and re-upload (headers are not auto-added for Assets).
+- **Primary Studio Filter** keeps rows matching the most common `(studioForeignId, studioId)` pair and removes other full rows.
+- **Resource Type** allows only `MEMBER` or `STAFF`; other values remove the full row.
+- **Asset URL Image Type** keeps only image URLs ending in `.jpg` / `.jpeg` / `.png` / `.bmp` (and `.pjpeg`); other URLs remove the full row.
+- **Duplicate Resource Foreign ID** keeps the first occurrence and removes later duplicate full rows.
+- There is **no Rule Navigator / manual repair step** for Assets — cleanup happens in validation.
+- The Finalize page shows removed rows and supports downloading a dedicated **removed** report.
+
+## Assets API overview
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/assets/validate` | Upload CSV and validate |
+| `POST` | `/api/assets/validate/start` | Start background validation |
+| `GET` | `/api/assets/validate/{validation_id}/progress` | Read live validation progress and result |
+| `GET` | `/api/assets/rows` | Read paginated cleaned rows |
+| `GET`  | `/api/assets/report/summary` | Validation summary download |
+| `GET`  | `/api/assets/report/errors` | Error report (affected / removed rows) |
+| `GET`  | `/api/assets/report/audit` | Audit log |
+| `GET`  | `/api/assets/report/corrected` | Cleaned / corrected dataset |
+| `GET`  | `/api/assets/report/removed` | Rows removed during Assets cleanup |
+| `GET`  | `/api/health` | `{ "status": "healthy" }` |
+
+Report endpoints accept `?format=csv` (default) or `?format=xlsx`.
+
+Assets validation uses an HTTP-only session cookie (`datalens_assets_session`), separate from the Members session cookie. Keep credentials enabled when calling the API from a separate frontend origin.
 
 ## Run services separately
 
