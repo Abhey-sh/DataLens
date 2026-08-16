@@ -39,8 +39,12 @@ const DETAIL_RULES = {
     fieldName: "countryCode",
     label: "Country Code Format",
   },
-  first_name_default: { fieldName: "firstName", label: "First Name Cleanup" },
-  last_name_default: { fieldName: "lastName", label: "Last Name Cleanup" },
+  first_name_default: { fieldName: "firstName", label: "First Name Validation" },
+  last_name_default: { fieldName: "lastName", label: "Last Name Validation" },
+  combined_name_validation: {
+    fieldName: "combinedName",
+    label: "Combined Name Validation",
+  },
   gender_validation: { fieldName: "gender", label: "Gender Validation" },
   lead_status_validation: {
     fieldName: "leadStatus",
@@ -55,6 +59,9 @@ const FORMAT_RULE_IDS = new Set([
   "email_format",
   "birthdate_validation",
   "country_code_validation",
+  "first_name_default",
+  "last_name_default",
+  "combined_name_validation",
 ]);
 
 const BULK_FILL_PROTECTED_FIELDS = new Set([
@@ -76,6 +83,10 @@ function percentage(value, total) {
     : "0% of total";
 }
 
+function displayRowNumber(rowNumber) {
+  return rowNumber > 0 ? rowNumber + 1 : rowNumber;
+}
+
 function isBlank(value) {
   return value == null || String(value).trim() === "";
 }
@@ -85,6 +96,11 @@ function isBlankIssue(issue) {
     issue?.issueType === "blank" ||
     (issue?.rowNumber > 0 && isBlank(issue?.currentValue))
   );
+}
+
+function getIssueCategory(issue, ruleCatalog) {
+  if (isBlankIssue(issue)) return "Blank Values";
+  return ruleCatalog.get(issue.ruleId)?.category ?? "Validation";
 }
 
 function isChangeNeed(issue) {
@@ -147,6 +163,10 @@ export function MembersReviewPage() {
   const [busyKey, setBusyKey] = useState(null);
   const [editingKey, setEditingKey] = useState(null);
   const [editValue, setEditValue] = useState("");
+  const [combinedEditValues, setCombinedEditValues] = useState({
+    firstName: "",
+    lastName: "",
+  });
   useEffect(() => {
     if (!result) {
       navigate("/single-upload/members/upload", { replace: true });
@@ -277,6 +297,20 @@ export function MembersReviewPage() {
       });
   }, [baselineIssues, currentIssues, ruleCatalog]);
 
+  const issueTabs = useMemo(
+    () => [
+      { value: "all", label: "All Issues", count: currentIssues.length },
+      ...navigatorGroups.map((group) => ({
+        value: group.category,
+        label: group.category,
+        count: currentIssues.filter(
+          (issue) => getIssueCategory(issue, ruleCatalog) === group.category,
+        ).length,
+      })),
+    ],
+    [currentIssues, navigatorGroups, ruleCatalog],
+  );
+
   const blankCandidates = useMemo(() => {
     const candidates = new Map();
     for (const issue of currentIssues) {
@@ -326,25 +360,26 @@ export function MembersReviewPage() {
     (candidate) => candidate.fieldName === bulkField,
   );
 
-  const blankIssues = useMemo(
+  const activeTabIssues = useMemo(
     () =>
-      currentIssues.filter(
-        (issue) => issue.rowNumber > 0 && isBlankIssue(issue),
-      ),
-    [currentIssues],
+      issueTab === "all"
+        ? currentIssues
+        : currentIssues.filter(
+            (issue) => getIssueCategory(issue, ruleCatalog) === issueTab,
+          ),
+    [currentIssues, issueTab, ruleCatalog],
   );
 
   const visibleIssues = useMemo(() => {
-    const tabIssues = issueTab === "blank" ? blankIssues : currentIssues;
-    if (selectedRuleKey === "all") return tabIssues;
+    if (selectedRuleKey === "all") return activeTabIssues;
     const [ruleId, fieldName, issueType] = selectedRuleKey.split(":");
-    return tabIssues.filter(
+    return activeTabIssues.filter(
       (issue) =>
         issue.ruleId === ruleId &&
         issue.fieldName === fieldName &&
         (isBlankIssue(issue) ? "blank" : "issue") === issueType,
     );
-  }, [blankIssues, currentIssues, issueTab, selectedRuleKey]);
+  }, [activeTabIssues, selectedRuleKey]);
 
   const selectedDetail = useMemo(() => {
     if (selectedRuleKey === "all") return null;
@@ -354,18 +389,18 @@ export function MembersReviewPage() {
     return { ruleId, fieldName, issueType, label: meta.label };
   }, [selectedRuleKey]);
 
-  const selectedBlankField = useMemo(() => {
+  const selectedRuleField = useMemo(() => {
     if (selectedRuleKey === "all") return null;
     const [ruleId, fieldName, issueType] = selectedRuleKey.split(":");
-    if (issueType !== "blank" || !fieldName) return null;
-    return { ruleId, fieldName };
+    if (!fieldName) return null;
+    return { ruleId, fieldName, issueType };
   }, [selectedRuleKey]);
 
-  /** Prefer the Blank Values rule currently selected in the navigator. */
+  /** Prefer blanks for the field currently selected in the navigator. */
   const orderedBlankCandidates = useMemo(() => {
-    if (!selectedBlankField) return blankCandidates;
+    if (!selectedRuleField) return blankCandidates;
     const preferred = blankCandidates.find(
-      (candidate) => candidate.fieldName === selectedBlankField.fieldName,
+      (candidate) => candidate.fieldName === selectedRuleField.fieldName,
     );
     if (!preferred) return blankCandidates;
     return [
@@ -374,7 +409,7 @@ export function MembersReviewPage() {
         (candidate) => candidate.fieldName !== preferred.fieldName,
       ),
     ];
-  }, [blankCandidates, selectedBlankField]);
+  }, [blankCandidates, selectedRuleField]);
 
   const detailIssues = useMemo(() => {
     if (!selectedDetail) return [];
@@ -392,13 +427,13 @@ export function MembersReviewPage() {
     [detailIssues],
   );
 
-  /** Detail-table rows respect the Detected Issues All/Blank tabs. */
+  /** Detail-table rows respect the active issue-category tab. */
   const detailVisibleIssues = useMemo(() => {
-    if (issueTab === "blank") {
-      return detailIssues.filter(isBlankIssue);
-    }
-    return detailIssues;
-  }, [detailIssues, issueTab]);
+    if (issueTab === "all") return detailIssues;
+    return detailIssues.filter(
+      (issue) => getIssueCategory(issue, ruleCatalog) === issueTab,
+    );
+  }, [detailIssues, issueTab, ruleCatalog]);
 
   function refreshFromResponse(response, successMessage) {
     if (response?.result) {
@@ -430,7 +465,10 @@ export function MembersReviewPage() {
     setError("");
     setMessage("");
     try {
-      const response = await applyRuleAutoFix(selectedDetail.ruleId);
+      const response = await applyRuleAutoFix(
+        selectedDetail.ruleId,
+        selectedDetail.issueType === "blank" ? "blank" : "validation",
+      );
       refreshFromResponse(
         response,
         `All suggested ${selectedDetail.label.toLowerCase()} values applied.`,
@@ -446,7 +484,14 @@ export function MembersReviewPage() {
 
   function startDetailEdit(issue) {
     setEditingKey(`${issue.ruleId}:${issue.rowNumber}:${issue.fieldName}`);
-    setEditValue(issue.suggestedValue ?? issue.currentValue ?? "");
+    if (issue.ruleId === "combined_name_validation") {
+      setCombinedEditValues({
+        firstName: issue.rowData?.firstName ?? "",
+        lastName: issue.rowData?.lastName ?? "",
+      });
+    } else {
+      setEditValue(issue.suggestedValue ?? issue.currentValue ?? "");
+    }
     setError("");
   }
 
@@ -455,11 +500,25 @@ export function MembersReviewPage() {
     setError("");
     setMessage("");
     try {
-      const response = await applyManualEdit(
-        issue.rowNumber,
-        issue.fieldName,
-        editValue,
-      );
+      let response;
+      if (issue.ruleId === "combined_name_validation") {
+        await applyManualEdit(
+          issue.rowNumber,
+          "firstName",
+          combinedEditValues.firstName,
+        );
+        response = await applyManualEdit(
+          issue.rowNumber,
+          "lastName",
+          combinedEditValues.lastName,
+        );
+      } else {
+        response = await applyManualEdit(
+          issue.rowNumber,
+          issue.fieldName,
+          editValue,
+        );
+      }
       refreshFromResponse(response, "Value updated.");
       setEditingKey(null);
     } catch (requestError) {
@@ -553,10 +612,10 @@ export function MembersReviewPage() {
 
   const openBulkFill = () => {
     const preferred =
-      (selectedBlankField &&
+      (selectedRuleField &&
         orderedBlankCandidates.find(
           (candidate) =>
-            candidate.fieldName === selectedBlankField.fieldName,
+            candidate.fieldName === selectedRuleField.fieldName,
         )) ||
       orderedBlankCandidates[0];
     setBulkField(preferred?.fieldName ?? "");
@@ -569,9 +628,18 @@ export function MembersReviewPage() {
   const handleSelectRule = (ruleKey) => {
     setSelectedRuleKey(ruleKey);
     setEditingKey(null);
-    if (ruleKey !== "all" && ruleKey.endsWith(":blank")) {
-      setIssueTab("blank");
+    if (ruleKey !== "all") {
+      const selectedItem = navigatorGroups
+        .flatMap((group) => group.items)
+        .find((item) => item.key === ruleKey);
+      setIssueTab(selectedItem?.category ?? "all");
     }
+  };
+
+  const handleSelectIssueTab = (value) => {
+    setIssueTab(value);
+    setSelectedRuleKey("all");
+    setEditingKey(null);
   };
 
   const closeBulkFill = () => {
@@ -723,7 +791,8 @@ export function MembersReviewPage() {
                     Apply all suggested
                   </Button>
                 ) : null}
-                {issueTab === "blank" || selectedBlankField ? (
+                {issueTab === "Blank Values" ||
+                selectedRuleField?.issueType === "blank" ? (
                   <Button
                     className="gap-2 bg-indigo-700 hover:bg-indigo-600 dark:bg-indigo-600 dark:text-white"
                     disabled={!blankCandidates.length}
@@ -736,15 +805,12 @@ export function MembersReviewPage() {
               </div>
             </div>
 
-            <div className="flex border-b border-slate-200 px-4 dark:border-slate-800">
-              {[
-                ["all", "All Issues", currentIssues.length],
-                ["blank", "Blank Values", blankIssues.length],
-              ].map(([value, label, count]) => (
+            <div className="flex overflow-x-auto border-b border-slate-200 px-4 dark:border-slate-800">
+              {issueTabs.map(({ value, label, count }) => (
                 <button
                   key={value}
                   type="button"
-                  onClick={() => setIssueTab(value)}
+                  onClick={() => handleSelectIssueTab(value)}
                   className={`border-b-2 px-3 py-3 text-sm font-medium transition ${
                     issueTab === value
                       ? "border-indigo-600 text-indigo-700 dark:text-indigo-300"
@@ -818,7 +884,7 @@ export function MembersReviewPage() {
                           <tr key={rowKey} className="align-top">
                             <td className="px-3 py-3">
                               <div className="font-semibold text-slate-900 dark:text-white">
-                                #{issue.rowNumber}
+                                #{displayRowNumber(issue.rowNumber)}
                               </div>
                               <div className="truncate text-xs text-slate-500">
                                 {issue.memberId
@@ -858,15 +924,47 @@ export function MembersReviewPage() {
                             </td>
                             <td className="px-3 py-3">
                               {isEditing ? (
-                                <input
-                                  type="text"
-                                  value={editValue}
-                                  onChange={(e) =>
-                                    setEditValue(e.target.value)
-                                  }
-                                  autoFocus
-                                  className="w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 shadow-sm outline-none ring-2 ring-indigo-100 focus:border-indigo-400 dark:border-indigo-700 dark:bg-slate-950 dark:text-white dark:ring-indigo-950"
-                                />
+                                issue.ruleId === "combined_name_validation" ? (
+                                  <div className="space-y-2">
+                                    <input
+                                      type="text"
+                                      aria-label="First name"
+                                      value={combinedEditValues.firstName}
+                                      onChange={(event) =>
+                                        setCombinedEditValues((values) => ({
+                                          ...values,
+                                          firstName: event.target.value,
+                                        }))
+                                      }
+                                      autoFocus
+                                      className="w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 shadow-sm outline-none ring-2 ring-indigo-100 focus:border-indigo-400 dark:border-indigo-700 dark:bg-slate-950 dark:text-white dark:ring-indigo-950"
+                                      placeholder="First name"
+                                    />
+                                    <input
+                                      type="text"
+                                      aria-label="Last name"
+                                      value={combinedEditValues.lastName}
+                                      onChange={(event) =>
+                                        setCombinedEditValues((values) => ({
+                                          ...values,
+                                          lastName: event.target.value,
+                                        }))
+                                      }
+                                      className="w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 shadow-sm outline-none ring-2 ring-indigo-100 focus:border-indigo-400 dark:border-indigo-700 dark:bg-slate-950 dark:text-white dark:ring-indigo-950"
+                                      placeholder="Last name"
+                                    />
+                                  </div>
+                                ) : (
+                                  <input
+                                    type="text"
+                                    value={editValue}
+                                    onChange={(e) =>
+                                      setEditValue(e.target.value)
+                                    }
+                                    autoFocus
+                                    className="w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 shadow-sm outline-none ring-2 ring-indigo-100 focus:border-indigo-400 dark:border-indigo-700 dark:bg-slate-950 dark:text-white dark:ring-indigo-950"
+                                  />
+                                )
                               ) : issue.suggestedValue != null ? (
                                 <div className="break-all text-sm font-medium text-slate-900 dark:text-slate-100">
                                   {issue.suggestedValue}
@@ -936,7 +1034,9 @@ export function MembersReviewPage() {
                     className="grid gap-3 p-4 text-sm transition hover:bg-slate-50 sm:grid-cols-[5rem_1fr_1fr_auto] sm:items-center dark:hover:bg-slate-800/50"
                   >
                     <span className="font-medium text-slate-500">
-                      {issue.rowNumber > 0 ? `Row ${issue.rowNumber}` : "File"}
+                      {issue.rowNumber > 0
+                        ? `Row ${displayRowNumber(issue.rowNumber)}`
+                        : "File"}
                     </span>
                     <div className="min-w-0">
                       <p className="truncate font-medium text-slate-900 dark:text-slate-100">
@@ -976,7 +1076,7 @@ export function MembersReviewPage() {
                       className="mx-auto text-emerald-500"
                     />
                     <p className="mt-3 font-medium text-slate-900 dark:text-white">
-                      {issueTab === "blank"
+                      {issueTab === "Blank Values"
                         ? "No unresolved blank values in this view"
                         : "No unresolved issues in this view"}
                     </p>
@@ -1320,7 +1420,11 @@ function BulkFillDialog({
               <p className="mt-1 text-xs leading-5 text-indigo-700 dark:text-indigo-300">
                 Preview rows:{" "}
                 {selectedCandidate.preview
-                  .map((item) => item.memberId || `Row ${item.rowNumber}`)
+                  .map(
+                    (item) =>
+                      item.memberId ||
+                      `Row ${displayRowNumber(item.rowNumber)}`,
+                  )
                   .join(", ")}
                 {selectedCandidate.count > selectedCandidate.preview.length
                   ? ` and ${selectedCandidate.count - selectedCandidate.preview.length} more`

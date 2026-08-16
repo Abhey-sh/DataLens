@@ -29,6 +29,7 @@ from app.validation.members.format_validators import (
     CountryCodeValidator,
     EmailValidator,
 )
+from app.validation.members.field_cleaning import sanitize_name_input
 from app.validation.members.validators import (
     REQUIRED_HEADERS,
     RequiredHeaderValidator,
@@ -36,6 +37,7 @@ from app.validation.members.validators import (
     RequiredFieldValidator,
     FirstNameDefaultValidator,
     LastNameDefaultValidator,
+    CombinedNameValidator,
     PostalCodeDefaultValidator,
     GenderValidator,
     LeadStatusValidator,
@@ -89,7 +91,15 @@ class MembersValidationService:
     def validate_dataframe(self, df: pd.DataFrame) -> ValidationResponse:
         """Validate a parsed members DataFrame."""
         started_at = perf_counter()
+        name_sources = {
+            str(column).strip(): df[column].copy()
+            for column in df.columns
+            if str(column).strip() in {"firstName", "lastName"}
+        }
         df = DataCleaningPipeline.clean(df.copy())
+        for column in ("firstName", "lastName"):
+            if column in df.columns and column in name_sources:
+                df[column] = name_sources[column].map(sanitize_name_input)
 
         # Initialize pipeline
         self.pipeline = ValidationPipeline(
@@ -176,6 +186,7 @@ class MembersValidationService:
         self.pipeline.register_row_validator(RequiredFieldValidator())
         self.pipeline.register_row_validator(FirstNameDefaultValidator())
         self.pipeline.register_row_validator(LastNameDefaultValidator())
+        self.pipeline.register_row_validator(CombinedNameValidator())
         self.pipeline.register_field_validator(PostalCodeDefaultValidator())
 
         self.pipeline.register_field_validator(EmailValidator())
@@ -335,11 +346,13 @@ class MembersValidationService:
 
         return response
 
-    def apply_auto_fix(self, rule_id: str) -> ValidationResponse:
-        """Apply automatic fix for a rule, then re-validate."""
+    def apply_auto_fix(
+        self, rule_id: str, issue_type: str | None = None
+    ) -> ValidationResponse:
+        """Apply automatic fixes for one rule and issue type, then re-validate."""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
-        self.pipeline.apply_auto_fix(rule_id)
+        self.pipeline.apply_auto_fix(rule_id, issue_type)
         logger.info(f"Auto-fix applied for rule {rule_id}")
         return self._revalidate()
 

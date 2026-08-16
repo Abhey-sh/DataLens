@@ -98,7 +98,7 @@ class EmailValidator(FieldValidator):
                 rule_name=self.rule_name,
                 field_name="email",
                 result=clean_email(value),
-                severity_suggest=ValidationSeverity.INFO,
+                severity_suggest=ValidationSeverity.ERROR,
                 severity_change=ValidationSeverity.ERROR,
             )
             if issue:

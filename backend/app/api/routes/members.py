@@ -273,7 +273,7 @@ async def apply_auto_fix(
     """Apply the configured automatic fix for one business rule."""
     service = _require_session(validation_session)
     try:
-        result = service.apply_auto_fix(request.rule_id)
+        result = service.apply_auto_fix(request.rule_id, request.issue_type)
     except BusinessRuleException as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _sync_job_result(validation_session, result, service)

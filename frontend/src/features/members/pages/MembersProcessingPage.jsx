@@ -64,6 +64,13 @@ const pipelineSteps = [
     gradient: "from-violet-600 to-indigo-500",
   },
   {
+    id: "categories",
+    title: "Check validation categories",
+    description: "Evaluating auto defaults, formats, and allowed values",
+    icon: ClipboardCheck,
+    gradient: "from-amber-400 to-orange-500",
+  },
+  {
     id: "blanks",
     title: "Check blank values",
     description: "Scanning validated columns for missing or empty cells",
@@ -305,7 +312,7 @@ export function MembersProcessingPage() {
       }
       return progress?.stage === "validating" ? "running" : "queued";
     }
-    if (step.id === "blanks") {
+    if (step.id === "categories") {
       if (error) return "not-run";
       if (
         result ||
@@ -324,6 +331,30 @@ export function MembersProcessingPage() {
         );
       });
       return progress?.stage === "validating" && fileReviewFinished
+        ? "running"
+        : "queued";
+    }
+    if (step.id === "blanks") {
+      if (error) return "not-run";
+      if (
+        result ||
+        progress?.status === "completed" ||
+        progress?.stage === "preparing"
+      ) {
+        return "completed";
+      }
+
+      const checks = progress?.checks ?? [];
+      const categoryChecks = checks.filter(
+        (check) => !FILE_REVIEW_CHECK_IDS.includes(check.checkId),
+      );
+      const categoriesFinished =
+        categoryChecks.length > 0 &&
+        categoryChecks.every(
+          (check) =>
+            check.status === "completed" || check.status === "failed",
+        );
+      return progress?.stage === "validating" && categoriesFinished
         ? "running"
         : "queued";
     }

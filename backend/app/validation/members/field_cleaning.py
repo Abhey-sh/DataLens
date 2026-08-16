@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Literal
 
 import pandas as pd
+import pycountry
+import tldextract
 from dateutil import parser as date_parser
 from email_validator import EmailNotValidError, validate_email
 
-NAME_JUNK = re.compile(r"[^A-Za-z\s\-'.]")
-MULTI_SPACE = re.compile(r"\s+")
-HYPHEN_SPACE = re.compile(r"\s*-\s*")
 EMAIL_ALLOWED = re.compile(r"[^A-Za-z0-9.@_+-]")
+NAME_ALLOWED_PUNCTUATION = frozenset("'’‘-.():#,")
+NAME_URL_PREFIX = re.compile(r"(?i)(?:https?://|www\.)")
+NAME_HOST_CANDIDATE = re.compile(r"[\w-]+(?:\.[\w-]+)+")
+PUBLIC_SUFFIX_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=())
 LEAD_ALIASES = {
     "lead": "LEAD",
     "leads": "LEAD",
@@ -23,7 +27,6 @@ LEAD_ALIASES = {
     "trial": "TRIALS",
     "trials": "TRIALS",
 }
-ALLOWED_GENDERS = {"M", "F", "P"}
 GENDER_ALIASES = {
     "m": "M",
     "male": "M",
@@ -64,45 +67,67 @@ def _current(value) -> str | None:
     return str(value)
 
 
-def clean_name(value) -> CleanResult:
-    current = _current(value)
-    if current is None:
-        return CleanResult(
-            status="suggest",
-            suggested="-",
-            current=None,
-            message="Blank name will be set to '-'",
-        )
+def sanitize_name_input(value):
+    """Trim a member name and remove Unicode control/format characters."""
+    if _is_blank(value):
+        return None
+    normalized = unicodedata.normalize("NFC", str(value))
+    sanitized = "".join(
+        character
+        for character in normalized
+        if not unicodedata.category(character).startswith("C")
+    ).strip()
+    return sanitized or None
 
-    cleaned = NAME_JUNK.sub("", current)
-    cleaned = HYPHEN_SPACE.sub("-", cleaned)
-    cleaned = MULTI_SPACE.sub(" ", cleaned).strip(" -'.")
-    cleaned = cleaned.strip()
 
-    if not cleaned:
-        return CleanResult(
-            status="suggest",
-            suggested="-",
-            current=current,
-            message="Name contained only junk characters; will be set to '-'",
-        )
+def is_allowed_name_text(value: str) -> bool:
+    """Return whether every character belongs to the member-name allowlist."""
+    return all(
+        character.isalpha()
+        or unicodedata.category(character).startswith("M")
+        or character.isdigit()
+        or character.isspace()
+        or character in NAME_ALLOWED_PUNCTUATION
+        for character in value
+    )
 
-    if len(cleaned) > 80 or not re.fullmatch(r"[A-Za-z][A-Za-z\s\-'.]*", cleaned):
-        return CleanResult(
-            status="change_need",
-            suggested=None,
-            current=current,
-            message="Name is still invalid after cleaning (pattern or max 80 chars)",
-        )
 
-    if cleaned != current:
-        return CleanResult(
-            status="suggest",
-            suggested=cleaned,
-            current=current,
-            message="Name will be cleaned",
-        )
-    return CleanResult(status="ok", current=current)
+def contains_name_url(value: str) -> bool:
+    """Detect URL-shaped content, including bare names with a TLD suffix."""
+    if NAME_URL_PREFIX.search(value):
+        return True
+    return any(
+        bool(PUBLIC_SUFFIX_EXTRACTOR(candidate.group()).suffix)
+        for candidate in NAME_HOST_CANDIDATE.finditer(value)
+    )
+
+
+def validate_name_text(
+    value: str, *, field_label: str, max_length: int | None = None
+) -> str | None:
+    """Return a manual-review reason when a nonblank name is invalid."""
+    if max_length is not None and len(value) > max_length:
+        return f"{field_label} must be between 1 and {max_length} characters"
+    if not is_allowed_name_text(value):
+        return f"{field_label} contains unsupported characters"
+    if contains_name_url(value):
+        return f"{field_label} must not contain a URL-like value"
+    return None
+
+
+def validate_name_pair(first_name: str, last_name: str) -> str | None:
+    """Validate all four concatenations in addition to the two fields."""
+    combinations = (
+        first_name + last_name,
+        first_name + " " + last_name,
+        last_name + first_name,
+        last_name + " " + first_name,
+    )
+    for value in combinations:
+        reason = validate_name_text(value, field_label="Combined name")
+        if reason:
+            return reason
+    return None
 
 
 def clean_phone(value) -> CleanResult:
@@ -154,6 +179,17 @@ def clean_phone(value) -> CleanResult:
     return CleanResult(status="ok", current=current)
 
 
+def sanitize_phone_for_export(value) -> str:
+    """Remove phone formatting for exports while preserving a leading plus."""
+    current = _current(value)
+    if current is None:
+        return ""
+    digits = re.sub(r"\D", "", current)
+    if not digits:
+        return ""
+    return f"+{digits}" if current.strip().startswith("+") else digits
+
+
 def clean_email(value) -> CleanResult:
     current = _current(value)
     if current is None:
@@ -167,6 +203,12 @@ def clean_email(value) -> CleanResult:
         local, *rest = stripped.split("@")
         domain = "".join(rest).replace("@", "")
         stripped = f"{local}@{domain}" if local and domain else stripped
+
+    if stripped.count("@") == 1:
+        local, domain = stripped.split("@", 1)
+        local = re.sub(r"\.{2,}", ".", local).strip(".")
+        domain = re.sub(r"\.{2,}", ".", domain).strip(".")
+        stripped = f"{local}@{domain}"
 
     try:
         validate_email(stripped, check_deliverability=False)
@@ -238,10 +280,10 @@ def clean_gender(value) -> CleanResult:
     letters_only = re.sub(r"[^A-Za-z]", "", current)
     if not letters_only:
         return CleanResult(
-            status="change_need",
-            suggested=None,
+            status="suggest",
+            suggested="P",
             current=current,
-            message="Gender contains no usable letters. Must be M, F, or P",
+            message="Gender contains no usable letters and will default to 'P'",
         )
 
     key = letters_only.lower()
@@ -256,31 +298,12 @@ def clean_gender(value) -> CleanResult:
             )
         return CleanResult(status="ok", current=current)
 
-    if letters_only != current.strip():
-        return CleanResult(
-            status="change_need",
-            suggested=None,
-            current=current,
-            message="Gender contains non-letters",
-        )
-
-    upper = letters_only.upper()
-    if upper not in ALLOWED_GENDERS:
-        return CleanResult(
-            status="change_need",
-            suggested=None,
-            current=current,
-            message=f"Invalid gender value: {current}. Must be M, F, or P",
-        )
-
-    if upper != current:
-        return CleanResult(
-            status="suggest",
-            suggested=upper,
-            current=current,
-            message="Gender will be normalized",
-        )
-    return CleanResult(status="ok", current=current)
+    return CleanResult(
+        status="suggest",
+        suggested="P",
+        current=current,
+        message=f"Unrecognized gender value '{current}' will default to 'P'",
+    )
 
 
 def clean_country_code(value) -> CleanResult:
@@ -306,6 +329,21 @@ def clean_country_code(value) -> CleanResult:
             message="Country code will be uppercased",
         )
     return CleanResult(status="ok", current=current)
+
+
+def fill_country_code_for_export(code, country_name) -> str:
+    """Fill a blank export country code from a recognized country name."""
+    current_code = _current(code)
+    if current_code is not None:
+        return current_code
+
+    country = _current(country_name)
+    if country is None:
+        return ""
+    try:
+        return pycountry.countries.lookup(country).alpha_2
+    except LookupError:
+        return ""
 
 
 def clean_postal_code(value) -> CleanResult:

@@ -55,7 +55,9 @@ class ValidationService(Protocol):
         self,
     ) -> tuple[list[str], ValidationResponse]: ...
 
-    def apply_auto_fix(self, rule_id: str) -> ValidationResponse: ...
+    def apply_auto_fix(
+        self, rule_id: str, issue_type: str | None = None
+    ) -> ValidationResponse: ...
 
     def apply_issue_auto_fix(
         self, rule_id: str, row_number: int
@@ -205,10 +207,12 @@ class DatasetValidationService:
 
     # --- fixes and edits ------------------------------------------------
 
-    def apply_auto_fix(self, rule_id: str) -> ValidationResponse:
-        """Apply every automatic fix for one rule, then re-validate."""
+    def apply_auto_fix(
+        self, rule_id: str, issue_type: str | None = None
+    ) -> ValidationResponse:
+        """Apply matching automatic fixes for one rule, then re-validate."""
         pipeline = self._require_pipeline()
-        pipeline.apply_auto_fix(rule_id)
+        pipeline.apply_auto_fix(rule_id, issue_type)
         logger.info(f"Auto-fix applied for rule {rule_id}")
         return self._revalidate()
 

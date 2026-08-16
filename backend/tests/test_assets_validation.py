@@ -1,3 +1,5 @@
+from io import BytesIO
+
 import pandas as pd
 import pytest
 
@@ -116,7 +118,7 @@ def test_assets_corrected_report_contains_only_kept_rows():
 
     generated = service.create_report_generator().generate("corrected")
     content = generated.content.decode()
-    assert generated.filename == "assets_validation_corrected.csv"
+    assert generated.filename == "assets.csv"
     assert "101" in content and "102" in content
     assert "countryCode" not in content
 
@@ -142,7 +144,9 @@ def test_assets_removed_report_lists_dropped_rows_with_reasons():
 
     generated = service.create_report_generator().generate("removed")
     content = generated.content.decode()
+    removed = pd.read_csv(BytesIO(generated.content))
     assert generated.filename == "assets_validation_removed.csv"
+    assert set(removed["Row Number"]) == {3, 4}
     assert "Removal Rule" in content
     assert "GUEST" in content
     assert "resource_type" in content or "Resource Type" in content

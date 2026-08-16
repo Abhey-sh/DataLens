@@ -85,10 +85,10 @@ function createValidationApi(domain) {
     return storeResult(response);
   }
 
-  async function applyRuleAutoFix(ruleId, options = {}) {
+  async function applyRuleAutoFix(ruleId, issueType, options = {}) {
     const response = await api.post(
       `/${domain}/auto-fix`,
-      { ruleId },
+      { ruleId, issueType },
       options,
     );
     return storeResult(response);

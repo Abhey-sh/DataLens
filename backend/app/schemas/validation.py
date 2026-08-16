@@ -1,6 +1,7 @@
 """Public API schemas for validation and report generation."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -141,6 +142,7 @@ class HealthResponse(ApiSchema):
 
 class AutoFixRequest(ApiSchema):
     rule_id: str
+    issue_type: Literal["blank", "validation"] | None = None
 
 
 class AutoFixIssueRequest(ApiSchema):

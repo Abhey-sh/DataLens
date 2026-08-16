@@ -115,7 +115,7 @@ class ReportGenerator:
         ]
         records = [
             {
-                "Row Number": issue.row_number,
+                "Row Number": issue.row_number + 1,
                 self._record_id_label: self._record_id(issue.row_number),
                 "Field": issue.field_name,
                 "Current Value": issue.current_value,
@@ -142,7 +142,11 @@ class ReportGenerator:
             )
             entries.append(
                 AuditEntry(
-                    row=record["row_number"],
+                    row=(
+                        record["row_number"] + 1
+                        if record["row_number"] > 0
+                        else record["row_number"]
+                    ),
                     field=record["field"],
                     old_value=record.get("old_value"),
                     new_value=record.get("new_value"),
@@ -193,7 +197,7 @@ class ReportGenerator:
                 continue
             source_row = self._source.loc[index]
             record = {
-                "Row Number": row_number,
+                "Row Number": row_number + 1,
                 "Removal Rule": "; ".join(
                     dict.fromkeys(rules_by_row.get(row_number, []))
                 ),

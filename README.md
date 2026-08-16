@@ -84,7 +84,8 @@ DataLens/
 - The Rule Navigator keeps **Auto Defaults** first and **Blank Values** last.
 - Blank values can be filtered independently from other validation issues.
 - **Fill Missing Values** previews affected rows, changes only eligible blank cells, records every original value in the audit log, and revalidates the dataset.
-- A first or last name containing no usable letters after cleaning (for example, `00932`) is treated as an **effective blank** and participates in the same bulk-fill workflow.
+- Blank first and last names participate in the bulk-fill workflow; nonblank
+  invalid names require manual correction.
 - Invalid bulk replacement values are rejected and the dataset is rolled back.
 
 ## API overview
@@ -196,19 +197,23 @@ VITE_API_BASE_URL=/api
 | Blank postal code | `-` |
 | Blank first name | `Change Me` |
 | Blank last name | `Me` |
-| Name containing no usable letters after cleaning | First/last-name blank default |
 | Invalid email / lead status | `Manual Review Required` |
 
 Suggestions never invent values outside configured business rules.
 
-### Name cleanup
+### Name validation
 
-First and last names allow Unicode letters and spaces. Cleanup is deterministic:
-
-- A zero between letters is mapped to `o` (`j0hn` → `john`).
-- Other numbers and special characters are removed (`J@hn123` → `Jhn`).
-- If no letters remain (`00932`), the issue is classified under **Blank Values** and receives the configured first- or last-name default.
-- The uploaded value remains available as `currentValue` and is preserved in the audit trail when a fix is applied.
+- `firstName` must contain 1–30 characters; `lastName` must contain 1–60.
+- Unicode letters and combining marks, digits, whitespace, and
+  `' ’ ‘ - . ( ) : # ,` are allowed.
+- Other punctuation, symbols, quotes, emoji, and URL-shaped values are rejected.
+- Bidi and control characters are removed and outer whitespace is trimmed before
+  validation.
+- Both fields and the four direct/space-separated first/last-name
+  concatenations are validated. URL detection uses recognized public suffixes,
+  and a concatenation-only failure produces one **Combined Name** issue.
+- Blank names retain their configured defaults. Other violations require manual
+  correction and are never silently stripped or auto-fixed.
 
 ## Verification
 

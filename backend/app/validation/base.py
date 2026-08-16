@@ -333,8 +333,10 @@ class ValidationPipeline:
         """Get all issues for a specific rule."""
         return [issue for issue in self.all_issues if issue.rule_id == rule_id]
 
-    def apply_auto_fix(self, rule_id: str):
-        """Apply automatic fixes for a rule."""
+    def apply_auto_fix(
+        self, rule_id: str, issue_type: str | None = None
+    ) -> None:
+        """Apply automatic fixes for one rule and optional issue type."""
         validator = self._get_validator_by_rule_id(rule_id)
         if not validator or not validator.auto_fix_available:
             raise BusinessRuleException(f"Auto-fix not available for rule {rule_id}")
@@ -343,6 +345,7 @@ class ValidationPipeline:
             issue
             for issue in self.get_issues_for_rule(rule_id)
             if issue.auto_fix_available
+            and (issue_type is None or issue.issue_type == issue_type)
         ]
         for issue in issues:
             self.working_df = validator.apply_fix(
